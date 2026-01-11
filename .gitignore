@@ -1,0 +1,33 @@
+node_modules/
+dist/
+*.log
+npm-debug.log*
+.DS_Store
+.env
+.env.local
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.Python
+venv/
+.venv/
+
+# Build outputs
+python-bridge/dist/
+python-bridge/build/
+*.spec
+*.zip
+exe-output.zip
+
+# Logs
+logs/
+
+# Large executables (>100MB GitHub limit)
+*.exe
+!exe-output/BBK-Bridge.exe

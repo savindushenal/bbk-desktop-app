@@ -1,0 +1,33 @@
+{
+  "name": "bbk-hardware-bridge",
+  "version": "1.0.0",
+  "description": "BBK Gym Hardware Bridge - Desktop application for managing gym hardware devices with cloud integration",
+  "author": "BBK Boho Fitness",
+  "main": "main-hardware-bridge.js",
+  "scripts": {
+    "start": "electron .",
+    "start:hardware": "electron main-hardware-bridge.js",
+    "build": "electron-packager . \"BBK Hardware Bridge\" --platform=win32 --arch=x64 --out=dist --overwrite --icon=assets/icon.ico",
+    "build-python": "cd python-bridge && pyinstaller --onefile --name bridge-service main.py",
+    "build-all": "npm run build-python && npm run build",
+    "dev": "electron . --inspect"
+  },
+  "keywords": [
+    "gym",
+    "hardware",
+    "fingerprint",
+    "zkteco",
+    "electron",
+    "bridge"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0",
+    "electron-log": "^5.0.1"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-packager": "^17.1.2"
+  }
+}
