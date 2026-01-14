@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 fingerprint_service: Optional[FingerprintService] = None
 doorlock_service: Optional[DoorLockService] = None
 ws_manager: WebSocketManager = WebSocketManager()
+mirror_connections: set = set()
 
 
 @asynccontextmanager
@@ -384,6 +385,41 @@ async def reconnect_device_command():
         return {"success": True, "message": "Device reconnected"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ==================== Screen Mirror WebSocket ====================
+
+@app.websocket("/ws/mirror")
+async def mirror_websocket(websocket: WebSocket):
+    """Screen mirroring WebSocket for employee dashboard → member screen"""
+    await websocket.accept()
+    mirror_connections.add(websocket)
+    logger.info(f"[Mirror] New connection. Total: {len(mirror_connections)}")
+    
+    try:
+        while True:
+            data = await websocket.receive_json()
+            logger.info(f"[Mirror] Broadcasting: {data.get('action')} - {data.get('type')}")
+            
+            # Broadcast to all OTHER connected screens (don't send back to sender)
+            disconnected = set()
+            for conn in mirror_connections:
+                if conn != websocket:
+                    try:
+                        await conn.send_json(data)
+                    except Exception as e:
+                        logger.warning(f"[Mirror] Failed to send to connection: {e}")
+                        disconnected.add(conn)
+            
+            # Remove disconnected clients
+            mirror_connections -= disconnected
+    
+    except WebSocketDisconnect:
+        mirror_connections.discard(websocket)
+        logger.info(f"[Mirror] Client disconnected. Remaining: {len(mirror_connections)}")
+    except Exception as e:
+        logger.error(f"[Mirror] Error: {e}")
+        mirror_connections.discard(websocket)
 
 
 # ==================== Root Endpoint ====================
