@@ -1,0 +1,145 @@
+# If START.bat Still Closes Immediately
+
+## Try This First:
+
+1. **Extract the NEW .zip file**
+   - Delete the old extracted folder
+   - Extract BBK-Desktop-App-v1.0.0.zip again
+   - Make sure you're using the latest version
+
+2. **Run TEST-WINDOW.bat**
+   - This simple test checks if batch files work
+   - If TEST-WINDOW.bat ALSO closes immediately:
+     - Problem is with your system, not the batch file
+     - Continue to "System-Level Fixes" below
+
+3. **Run CHECK-SYSTEM.bat**
+   - Checks for Node.js, npm, files
+   - If this closes immediately too:
+     - Your system has batch file execution issues
+
+## System-Level Fixes:
+
+### Fix 1: Run from Command Prompt
+Instead of double-clicking, try:
+```cmd
+1. Press Win+R
+2. Type: cmd
+3. Press Enter
+4. Type: cd C:\BBK-Desktop-App (your extracted folder path)
+5. Type: START.bat
+6. Press Enter
+```
+Window should stay open this way.
+
+### Fix 2: Create Desktop Shortcut
+```cmd
+1. Right-click START.bat
+2. Send to → Desktop (create shortcut)
+3. Right-click the shortcut → Properties
+4. Change "Run:" to "Normal window" (not Minimized)
+5. Click OK
+6. Double-click the shortcut
+```
+
+### Fix 3: Check Windows Settings
+```
+Settings → Privacy & Security → For developers
+→ Enable "Change execution policy..."
+```
+
+### Fix 4: Disable "Quick Edit Mode"
+```
+1. Open Command Prompt
+2. Right-click title bar → Properties
+3. Uncheck "Quick Edit Mode"
+4. Click OK
+```
+
+## Manual Start (Workaround):
+
+If START.bat won't work, run manually:
+
+```cmd
+1. Open Command Prompt (cmd)
+2. Navigate to folder:
+   cd C:\BBK-Desktop-App
+
+3. Start Python Bridge:
+   start python-bridge\BBK-Bridge.exe
+
+4. Wait 3 seconds
+
+5. Start Electron:
+   npm start
+```
+
+## Check What's Actually Happening:
+
+Run this to see errors:
+```cmd
+START.bat > output.log 2>&1
+notepad output.log
+```
+
+This saves all output to a file you can read.
+
+## If npm start Fails:
+
+1. **Check Node.js:**
+   ```cmd
+   node -v
+   npm -v
+   ```
+   If "command not found" → Install Node.js
+
+2. **Install dependencies manually:**
+   ```cmd
+   cd C:\BBK-Desktop-App
+   npm install
+   ```
+
+3. **Try starting again:**
+   ```cmd
+   npm start
+   ```
+
+## Common Error Messages:
+
+**"'node' is not recognized"**
+→ Node.js not installed or not in PATH
+→ Install from https://nodejs.org/
+→ Restart computer after installing
+
+**"Cannot find module 'electron'"**
+→ Dependencies not installed
+→ Run: npm install
+
+**"Error: listen EADDRINUSE :::8000"**
+→ Port 8000 already in use
+→ Close BBK-Bridge.exe in Task Manager
+→ Try again
+
+**"ENOENT: no such file or directory"**
+→ Running from wrong folder
+→ cd to the correct BBK-Desktop-App folder
+
+## Still Not Working?
+
+Try the **BBK-Complete-Package** instead:
+- Located at: E:\githubNew\bbk\bbk-desktop-app\BBK-Complete-Package\
+- Use START-APP.bat from that folder
+- It has better error handling
+
+Or check if there's a standalone .exe version available (no Node.js needed).
+
+---
+
+**Quick Test:**
+```cmd
+1. Open cmd
+2. cd to BBK-Desktop-App folder
+3. Type: echo test
+4. Type: pause
+```
+If this works but START.bat doesn't, the batch file has an issue.
