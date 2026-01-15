@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 import json
+from pathlib import Path
 
 from fingerprint_service import FingerprintService
 from doorlock_service import DoorLockService
@@ -36,7 +37,17 @@ fingerprint_service: Optional[FingerprintService] = None
 doorlock_service: Optional[DoorLockService] = None
 ws_manager: WebSocketManager = WebSocketManager()
 mirror_connections: set = set()
+attendance_connections: set = set()
 
+
+# Load configuration
+def load_config():
+    """Load configuration from config.json"""
+    config_path = Path(__file__).parent.parent / "config.json"
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,10 +57,20 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Python Hardware Bridge...")
     
+    # Load config
+    config = load_config()
+    
     try:
         # Initialize door lock service (optional)
         try:
-            doorlock_service = DoorLockService(port="COM7", baudrate=9600)
+            doorlock_port = "COM7"  # default
+            doorlock_baudrate = 9600  # default
+            if config and "hardware" in config and "doorlock" in config["hardware"]:
+                doorlock_port = config["hardware"]["doorlock"].get("port", "COM7")
+                doorlock_baudrate = config["hardware"]["doorlock"].get("baudrate", 9600)
+            
+            logger.info(f"Initializing door lock on {doorlock_port} @ {doorlock_baudrate} baud")
+            doorlock_service = DoorLockService(port=doorlock_port, baudrate=doorlock_baudrate)
             if doorlock_service.connect():
                 logger.info("[OK] Door lock service initialized")
             else:
@@ -61,7 +82,14 @@ async def lifespan(app: FastAPI):
         
         # Initialize fingerprint service (optional)
         try:
-            fingerprint_service = FingerprintService(ip="192.168.1.201", port=4370)
+            fingerprint_ip = "192.168.1.201"  # default
+            fingerprint_port = 4370  # default
+            if config and "hardware" in config and "fingerprint" in config["hardware"]:
+                fingerprint_ip = config["hardware"]["fingerprint"].get("ip", "192.168.1.201")
+                fingerprint_port = config["hardware"]["fingerprint"].get("port", 4370)
+            
+            logger.info(f"Initializing fingerprint device at {fingerprint_ip}:{fingerprint_port}")
+            fingerprint_service = FingerprintService(ip=fingerprint_ip, port=fingerprint_port)
             if fingerprint_service.connect():
                 logger.info("[OK] Fingerprint service initialized")
             else:
@@ -392,6 +420,7 @@ async def reconnect_device_command():
 @app.websocket("/ws/mirror")
 async def mirror_websocket(websocket: WebSocket):
     """Screen mirroring WebSocket for employee dashboard → member screen"""
+    global mirror_connections
     await websocket.accept()
     mirror_connections.add(websocket)
     logger.info(f"[Mirror] New connection. Total: {len(mirror_connections)}")
@@ -407,6 +436,7 @@ async def mirror_websocket(websocket: WebSocket):
                 if conn != websocket:
                     try:
                         await conn.send_json(data)
+                        logger.info(f"[Mirror] Sent to connection successfully")
                     except Exception as e:
                         logger.warning(f"[Mirror] Failed to send to connection: {e}")
                         disconnected.add(conn)
@@ -420,6 +450,27 @@ async def mirror_websocket(websocket: WebSocket):
     except Exception as e:
         logger.error(f"[Mirror] Error: {e}")
         mirror_connections.discard(websocket)
+
+
+@app.websocket("/ws/attendance")
+async def attendance_websocket(websocket: WebSocket):
+    """Attendance WebSocket for fingerprint events"""
+    global attendance_connections
+    await websocket.accept()
+    attendance_connections.add(websocket)
+    logger.info(f"[Attendance] New connection. Total: {len(attendance_connections)}")
+    
+    try:
+        # Keep connection alive, just receive data but don't process
+        while True:
+            await websocket.receive_text()
+    
+    except WebSocketDisconnect:
+        attendance_connections.discard(websocket)
+        logger.info(f"[Attendance] Client disconnected. Remaining: {len(attendance_connections)}")
+    except Exception as e:
+        logger.error(f"[Attendance] Error: {e}")
+        attendance_connections.discard(websocket)
 
 
 # ==================== Root Endpoint ====================

@@ -1,0 +1,720 @@
+/**
+ * BBK Gym Hardware Bridge - Main Process
+ * Electron app that connects hardware devices with cloud dashboard
+ */
+
+const { app, BrowserWindow, Menu, ipcMain, screen, Notification } = require('electron');
+const path = require('path');
+const { spawn } = require('child_process');
+const WebSocket = require('ws');
+const fs = require('fs');
+const log = require('electron-log');
+
+// Configure logging
+log.transports.file.resolvePathFn = () => path.join(__dirname, 'logs', 'electron.log');
+log.info('BBK Hardware Bridge starting...');
+
+// Windows
+let employeeWindow = null;
+let memberWindow = null;
+
+// Python bridge
+let pythonProcess = null;
+let pythonWs = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+
+// Configuration
+let config = {};
+
+// Event queue for offline mode
+const eventQueue = [];
+
+/**
+ * Load configuration from config.json
+ */
+function loadConfig() {
+  try {
+    const configPath = path.join(__dirname, 'config.json');
+    const configData = fs.readFileSync(configPath, 'utf8');
+    config = JSON.parse(configData);
+    log.info('Configuration loaded successfully');
+    return config;
+  } catch (error) {
+    log.error('Failed to load config.json:', error);
+    // Use defaults
+    config = {
+      screens: {
+        employee: {
+          url: 'https://bbkdashboard.vercel.app/',
+          display_index: 0,
+          dev_tools: false
+        },
+        member: {
+          url: 'https://bbkdashboard.vercel.app/member-screen',
+          display_index: 1,
+          fullscreen: true,
+          kiosk_mode: true
+        }
+      },
+      hardware: {
+        fingerprint: {
+          ip: '192.168.1.201',
+          port: 4370,
+          timeout: 5
+        },
+        doorlock: {
+          port: 'COM7',
+          baudrate: 9600,
+          open_duration: 5000
+        }
+      },
+      python_bridge: {
+        enabled: true,
+        port: 8000,
+        auto_start: true,
+        executable: path.join(__dirname, 'python-bridge', 'main.py')
+      },
+      ui: {
+        popup_duration: 5000,
+        sound_enabled: true
+      }
+    };
+    return config;
+  }
+}
+
+/**
+ * Create Employee Screen (Admin Dashboard)
+ */
+function createEmployeeWindow() {
+  const displays = screen.getAllDisplays();
+  const displayIndex = config.screens.employee.display_index || 0;
+  const targetDisplay = displays[displayIndex] || displays[0];
+  
+  employeeWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    x: targetDisplay.bounds.x,
+    y: targetDisplay.bounds.y,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'renderer', 'employee-preload.js')
+    },
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    title: 'BBK Gym - Employee Dashboard',
+    backgroundColor: '#0f172a'
+  });
+
+  employeeWindow.loadURL(config.screens.employee.url);
+
+  if (config.screens.employee.dev_tools) {
+    employeeWindow.webContents.openDevTools();
+  }
+
+  employeeWindow.on('closed', () => {
+    employeeWindow = null;
+  });
+  
+  log.info(`Employee window created on display ${displayIndex}`);
+}
+
+/**
+ * Create Member Screen (Kiosk Display)
+ */
+function createMemberWindow() {
+  const displays = screen.getAllDisplays();
+  const displayIndex = config.screens.member.display_index || 1;
+  
+  // Check if we have a second display
+  if (displays.length < displayIndex + 1) {
+    log.warn(`Display ${displayIndex} not found. Member screen will not be created.`);
+    return;
+  }
+  
+  const targetDisplay = displays[displayIndex];
+  
+  memberWindow = new BrowserWindow({
+    width: targetDisplay.bounds.width,
+    height: targetDisplay.bounds.height,
+    x: targetDisplay.bounds.x,
+    y: targetDisplay.bounds.y,
+    fullscreen: config.screens.member.fullscreen,
+    kiosk: config.screens.member.kiosk_mode,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'renderer', 'member-preload.js')
+    },
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    title: 'BBK Gym - Member Kiosk',
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    frame: !config.screens.member.kiosk_mode
+  });
+
+  memberWindow.loadURL(config.screens.member.url);
+
+  // Allow Escape to exit kiosk mode
+  if (config.screens.member.kiosk_mode) {
+    memberWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'Escape' && input.type === 'keyDown') {
+        memberWindow.setKiosk(false);
+        memberWindow.setFullScreen(false);
+        log.info('Kiosk mode exited via Escape key');
+      }
+    });
+  }
+
+  memberWindow.on('closed', () => {
+    memberWindow = null;
+  });
+  
+  log.info(`Member window created on display ${displayIndex}`);
+}
+
+/**
+ * Start Python bridge service
+ */
+function startPythonBridge() {
+  if (!config.python_bridge.enabled || !config.python_bridge.auto_start) {
+    log.info('Python bridge disabled in config');
+    return;
+  }
+  
+  try {
+    log.info('Starting Python bridge service...');
+    
+    // Determine Python executable
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const scriptPath = config.python_bridge.executable;
+    
+    // Spawn Python process
+    pythonProcess = spawn(pythonCmd, [scriptPath], {
+      cwd: path.dirname(scriptPath),
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    });
+    
+    pythonProcess.stdout.on('data', (data) => {
+      log.info(`[Python]: ${data.toString().trim()}`);
+    });
+    
+    pythonProcess.stderr.on('data', (data) => {
+      log.error(`[Python Error]: ${data.toString().trim()}`);
+    });
+    
+    pythonProcess.on('close', (code) => {
+      log.warn(`Python bridge process exited with code ${code}`);
+      pythonProcess = null;
+      
+      // Auto-restart on crash
+      if (code !== 0 && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        log.info(`Attempting to restart Python bridge (attempt ${reconnectAttempts})...`);
+        setTimeout(startPythonBridge, 5000);
+      }
+    });
+    
+    // Wait for service to start, then connect WebSocket
+    setTimeout(connectToPythonBridge, 3000);
+    
+  } catch (error) {
+    log.error('Failed to start Python bridge:', error);
+  }
+}
+
+/**
+ * Connect to Python bridge via WebSocket
+ */
+function connectToPythonBridge() {
+  const wsUrl = `ws://localhost:${config.python_bridge.port}/ws/events`;
+  
+  log.info(`Connecting to Python bridge at ${wsUrl}...`);
+  
+  try {
+    pythonWs = new WebSocket(wsUrl);
+    
+    pythonWs.on('open', () => {
+      log.info('Connected to Python bridge WebSocket');
+      reconnectAttempts = 0;
+      
+      // Send queued events
+      flushEventQueue();
+      
+      // Notify windows
+      broadcastToWindows('python-bridge-connected', { status: 'connected' });
+    });
+    
+    pythonWs.on('message', (data) => {
+      try {
+        const event = JSON.parse(data);
+        handlePythonEvent(event);
+      } catch (error) {
+        log.error('Error parsing Python event:', error);
+      }
+    });
+    
+    pythonWs.on('error', (error) => {
+      log.error('Python bridge WebSocket error:', error);
+    });
+    
+    pythonWs.on('close', () => {
+      log.warn('Python bridge WebSocket closed');
+      pythonWs = null;
+      
+      // Attempt reconnection
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        log.info(`Reconnecting to Python bridge (attempt ${reconnectAttempts})...`);
+        setTimeout(connectToPythonBridge, 2000 * reconnectAttempts);
+      }
+      
+      broadcastToWindows('python-bridge-disconnected', { status: 'disconnected' });
+    });
+    
+  } catch (error) {
+    log.error('Failed to connect to Python bridge:', error);
+  }
+}
+
+/**
+ * Handle events from Python bridge
+ */
+async function handlePythonEvent(event) {
+  log.info('Python event received:', event);
+  
+  switch (event.type) {
+    case 'finger_scanned':
+      await handleFingerScanned(event.data);
+      break;
+    
+    case 'enrollment_started':
+      broadcastToWindows('enrollment-started', event.data);
+      break;
+    
+    case 'enrollment_complete':
+      broadcastToWindows('enrollment-complete', event.data);
+      showNotification('Enrollment Complete', `User ${event.data.user_id} enrolled successfully`);
+      break;
+    
+    case 'enrollment_error':
+      broadcastToWindows('enrollment-error', event.data);
+      showNotification('Enrollment Failed', event.data.error, 'error');
+      break;
+    
+    case 'device_disconnected':
+      showNotification('Device Disconnected', 'Fingerprint device lost connection', 'error');
+      broadcastToWindows('device-disconnected', event.data);
+      break;
+    
+    default:
+      log.warn('Unknown event type:', event.type);
+  }
+}
+
+/**
+ * Handle finger scan event
+ */
+async function handleFingerScanned(data) {
+  const { user_id, timestamp, punch_type } = data;
+  
+  log.info(`Finger scanned: user_id=${user_id}, punch_type=${punch_type}`);
+  
+  // Query member details from cloud or local cache
+  // For now, broadcast the event to all windows
+  broadcastToWindows('finger-scanned', data);
+  
+  // Show member info on member screen
+  if (memberWindow) {
+    memberWindow.webContents.send('show-member-info', {
+      user_id,
+      timestamp,
+      punch_type
+    });
+    
+    // Auto-hide after configured duration
+    setTimeout(() => {
+      if (memberWindow) {
+        memberWindow.webContents.send('hide-member-info');
+      }
+    }, config.ui.popup_duration);
+  }
+  
+  // Optionally open door
+  // This logic should check member expiry status first
+  // For now, we'll just log it
+  log.info(`Would check member ${user_id} expiry and open door if valid`);
+}
+
+/**
+ * Broadcast message to all renderer windows
+ */
+function broadcastToWindows(channel, data) {
+  if (employeeWindow) {
+    employeeWindow.webContents.send(channel, data);
+  }
+  if (memberWindow) {
+    memberWindow.webContents.send(channel, data);
+  }
+}
+
+/**
+ * Show system notification
+ */
+function showNotification(title, body, type = 'info') {
+  if (Notification.isSupported()) {
+    new Notification({ title, body }).show();
+  }
+  log.info(`[Notification] ${title}: ${body}`);
+}
+
+/**
+ * Send command to Python bridge
+ */
+function sendToPythonBridge(message) {
+  if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
+    pythonWs.send(JSON.stringify(message));
+    log.info('Sent to Python bridge:', message);
+  } else {
+    log.warn('Python bridge not connected, queuing message');
+    eventQueue.push(message);
+  }
+}
+
+/**
+ * Flush queued events when connection restored
+ */
+function flushEventQueue() {
+  if (eventQueue.length === 0) return;
+  
+  log.info(`Flushing ${eventQueue.length} queued events...`);
+  
+  while (eventQueue.length > 0) {
+    const event = eventQueue.shift();
+    sendToPythonBridge(event);
+  }
+}
+
+/**
+ * Create application menu
+ */
+function createMenu() {
+  const template = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Dashboard',
+          accelerator: 'Ctrl+D',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url);
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Settings',
+          accelerator: 'Ctrl+,',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/dashboard/settings');
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Exit',
+          accelerator: 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          }
+        }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Members',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/dashboard/members');
+            }
+          }
+        },
+        {
+          label: 'Registrations',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/dashboard/registrations');
+            }
+          }
+        },
+        {
+          label: 'Attendance',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/dashboard/attendance');
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Promotional Media',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/dashboard/member-screen');
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Member Kiosk',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/member-kiosk');
+            }
+          }
+        },
+        {
+          label: 'Member Screen',
+          click: () => {
+            if (employeeWindow) {
+              employeeWindow.loadURL(config.screens.employee.url + '/member-screen');
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Reload',
+          accelerator: 'Ctrl+R',
+          click: (item, focusedWindow) => {
+            if (focusedWindow) {
+              focusedWindow.reload();
+            }
+          }
+        },
+        {
+          label: 'Toggle DevTools',
+          accelerator: 'Ctrl+Shift+I',
+          click: (item, focusedWindow) => {
+            if (focusedWindow) {
+              focusedWindow.webContents.toggleDevTools();
+            }
+          }
+        }
+      ]
+    },
+    {
+      label: 'Hardware',
+      submenu: [
+        {
+          label: 'Fingerprint Device',
+          submenu: [
+            {
+              label: 'Reconnect',
+              click: () => {
+                sendToPythonBridge({
+                  type: 'command',
+                  action: 'reconnect_device',
+                  request_id: Date.now().toString()
+                });
+              }
+            },
+            {
+              label: 'Get Users',
+              click: () => {
+                sendToPythonBridge({
+                  type: 'command',
+                  action: 'get_users',
+                  request_id: Date.now().toString()
+                });
+              }
+            }
+          ]
+        },
+        { type: 'separator' },
+        {
+          label: 'Test Door Lock',
+          click: () => {
+            sendToPythonBridge({
+              type: 'command',
+              action: 'open_door',
+              payload: { duration: 5 },
+              request_id: Date.now().toString()
+            });
+            showNotification('Door Test', 'Opening door for 5 seconds...');
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Gym-Bridge Status',
+          click: () => {
+            // Open health check in browser
+            require('electron').shell.openExternal(`http://localhost:${config.python_bridge.port}/health`);
+          }
+        }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Documentation',
+          click: () => {
+            require('electron').shell.openExternal('https://github.com/yourusername/bbk-hardware-bridge');
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'About',
+          click: () => {
+            require('electron').dialog.showMessageBox({
+              type: 'info',
+              title: 'About BBK Hardware Bridge',
+              message: 'BBK Gym Hardware Bridge v1.0.0',
+              detail: 'Desktop application for managing gym hardware devices with cloud integration.'
+            });
+          }
+        }
+      ]
+    }
+  ];
+  
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+// ==================== IPC Handlers ====================
+
+/**
+ * Handle fingerprint enrollment request from renderer
+ */
+ipcMain.handle('enroll-fingerprint', async (event, { user_id, finger_id }) => {
+  log.info(`Enrollment requested for user ${user_id}, finger ${finger_id}`);
+  
+  return new Promise((resolve) => {
+    const request_id = Date.now().toString();
+    
+    // Send command to Python
+    sendToPythonBridge({
+      type: 'command',
+      action: 'enroll_fingerprint',
+      payload: { user_id, finger_id },
+      request_id
+    });
+    
+    // Listen for response
+    // In production, you'd set up a proper request/response handler
+    setTimeout(() => {
+      resolve({ success: true, message: 'Enrollment started' });
+    }, 1000);
+  });
+});
+
+/**
+ * Handle door open request from renderer
+ */
+ipcMain.handle('open-door', async (event, { duration = 5 }) => {
+  log.info(`Door open requested for ${duration} seconds`);
+  
+  sendToPythonBridge({
+    type: 'command',
+    action: 'open_door',
+    payload: { duration },
+    request_id: Date.now().toString()
+  });
+  
+  return { success: true, message: `Door will open for ${duration} seconds` };
+});
+
+/**
+ * Handle door close request from renderer
+ */
+ipcMain.handle('close-door', async (event) => {
+  log.info('Door close requested');
+  
+  sendToPythonBridge({
+    type: 'command',
+    action: 'close_door',
+    request_id: Date.now().toString()
+  });
+  
+  return { success: true, message: 'Door closing' };
+});
+
+/**
+ * Get hardware status
+ */
+ipcMain.handle('get-hardware-status', async (event) => {
+  return {
+    python_bridge: {
+      connected: pythonWs && pythonWs.readyState === WebSocket.OPEN,
+      reconnect_attempts: reconnectAttempts
+    },
+    fingerprint: {
+      configured: !!config.hardware.fingerprint.ip
+    },
+    doorlock: {
+      configured: !!config.hardware.doorlock.port
+    }
+  };
+});
+
+// ==================== App Lifecycle ====================
+
+app.whenReady().then(() => {
+  log.info('App ready, initializing...');
+  
+  // Load config
+  loadConfig();
+  
+  // Create windows
+  createEmployeeWindow();
+  createMemberWindow();
+  
+  // Create menu
+  createMenu();
+  
+  // Start Python bridge
+  startPythonBridge();
+  
+  log.info('Initialization complete');
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createEmployeeWindow();
+  }
+});
+
+app.on('before-quit', () => {
+  log.info('App quitting, cleaning up...');
+  
+  // Close WebSocket
+  if (pythonWs) {
+    pythonWs.close();
+  }
+  
+  // Kill Python process
+  if (pythonProcess) {
+    pythonProcess.kill();
+  }
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  log.error('Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  log.error('Unhandled rejection at:', promise, 'reason:', reason);
+});

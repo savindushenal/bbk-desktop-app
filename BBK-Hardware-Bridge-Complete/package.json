@@ -1,0 +1,73 @@
+{
+  "name": "bbk-desktop-app",
+  "version": "1.0.0",
+  "description": "BBK Hardware Bridge - Desktop Application",
+  "author": "BBK Boho Fitness",
+  "main": "main-hardware-bridge.js",
+  "scripts": {
+    "start": "electron .",
+    "start:hardware": "electron main-hardware-bridge.js",
+    "prestart": "node -e \"console.log('Starting BBK Hardware Bridge...')\"",
+    "build": "electron-builder --win --x64",
+    "build:portable": "electron-builder --win portable",
+    "build-python": "cd python-bridge && pyinstaller --onefile --name bridge-service main.py",
+    "package": "node -e \"console.log('Use package-release.bat to create portable package')\"",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.3",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.bbk.hardwarebridge",
+    "productName": "BBK Hardware Bridge",
+    "copyright": "Copyright © 2026 BBK Boho Fitness",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main-hardware-bridge.js",
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "config.json",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "resources/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BBK Hardware Bridge",
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico",
+      "license": "LICENSE.txt",
+      "runAfterFinish": true,
+      "warningsAsErrors": false
+    },
+    "portable": {
+      "artifactName": "BBK-Hardware-Bridge-Portable.exe"
+    }
+  }
+}

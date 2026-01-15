@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Mirror Test</title>
+    <style>
+        body { font-family: Arial; padding: 20px; }
+        .sender { border: 2px solid blue; padding: 20px; margin: 10px; }
+        .receiver { border: 2px solid green; padding: 20px; margin: 10px; }
+        button { padding: 10px 20px; font-size: 16px; margin: 5px; }
+        .log { background: #f0f0f0; padding: 10px; margin: 10px 0; height: 200px; overflow-y: scroll; }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Mirror Test</h1>
+    
+    <div class="sender">
+        <h2>Sender (Employee Dashboard)</h2>
+        <button onclick="sendShow()">Send SHOW</button>
+        <button onclick="sendHide()">Send HIDE</button>
+        <div class="log" id="senderLog"></div>
+    </div>
+    
+    <div class="receiver">
+        <h2>Receiver (Member Screen)</h2>
+        <div class="log" id="receiverLog"></div>
+    </div>
+    
+    <script>
+        let senderWs, receiverWs;
+        
+        // Connect sender
+        function connectSender() {
+            senderWs = new WebSocket('ws://localhost:8000/ws/mirror');
+            senderWs.onopen = () => log('senderLog', '✓ Sender connected');
+            senderWs.onmessage = (e) => log('senderLog', 'Received: ' + e.data);
+            senderWs.onerror = () => log('senderLog', '✗ Sender error');
+            senderWs.onclose = () => log('senderLog', '✗ Sender disconnected');
+        }
+        
+        // Connect receiver
+        function connectReceiver() {
+            receiverWs = new WebSocket('ws://localhost:8000/ws/mirror');
+            receiverWs.onopen = () => log('receiverLog', '✓ Receiver connected');
+            receiverWs.onmessage = (e) => {
+                log('receiverLog', '📩 Received: ' + e.data);
+                const data = JSON.parse(e.data);
+                if (data.action === 'show') {
+                    log('receiverLog', '👤 SHOW member: ' + data.data?.name);
+                } else if (data.action === 'hide') {
+                    log('receiverLog', '🚫 HIDE screen');
+                }
+            };
+            receiverWs.onerror = () => log('receiverLog', '✗ Receiver error');
+            receiverWs.onclose = () => log('receiverLog', '✗ Receiver disconnected');
+        }
+        
+        function sendShow() {
+            const data = {
+                action: 'show',
+                type: 'member-profile',
+                data: {
+                    name: 'Test Member',
+                    phone: '1234567890',
+                    package: { name: 'Gold', expiryDate: '2026-12-31' },
+                    daysRemaining: 350,
+                    isExpired: false
+                }
+            };
+            senderWs.send(JSON.stringify(data));
+            log('senderLog', '📤 Sent SHOW');
+        }
+        
+        function sendHide() {
+            const data = { action: 'hide' };
+            senderWs.send(JSON.stringify(data));
+            log('senderLog', '📤 Sent HIDE');
+        }
+        
+        function log(id, msg) {
+            const time = new Date().toLocaleTimeString();
+            document.getElementById(id).innerHTML += `[${time}] ${msg}<br>`;
+        }
+        
+        // Auto-connect on load
+        window.onload = () => {
+            setTimeout(connectSender, 100);
+            setTimeout(connectReceiver, 500);
+        };
+    </script>
+</body>
+</html>

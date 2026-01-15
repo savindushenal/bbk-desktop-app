@@ -1,0 +1,63 @@
+{
+  "version": "1.0.0",
+  "app_name": "BBK Hardware Bridge",
+  "gym_id": 1,
+  
+  "screens": {
+    "employee": {
+      "url": "https://bbkdashboard.vercel.app/",
+      "display_index": 0,
+      "dev_tools": false
+    },
+    "member": {
+      "url": "https://bbkdashboard.vercel.app/member-screen",
+      "display_index": 1,
+      "fullscreen": true,
+      "kiosk_mode": true
+    }
+  },
+  
+  "hardware": {
+    "fingerprint": {
+      "ip": "192.168.2.201",
+      "port": 4370,
+      "timeout": 5,
+      "auto_reconnect": true,
+      "comment": "ZKTeco fingerprint device IP and port"
+    },
+    "doorlock": {
+      "port": "COM7",
+      "baudrate": 9600,
+      "open_duration": 5000,
+      "comment": "Serial port for door lock (Arduino/relay)"
+    }
+  },
+  
+  "python_bridge": {
+    "enabled": true,
+    "port": 8000,
+    "auto_start": false,
+    "executable": "./BBK-Bridge.exe",
+    "comment": "Run BBK-Bridge.exe separately before starting Electron app"
+  },
+  
+  "cloud": {
+    "base_url": "https://bbkdashboard.vercel.app",
+    "ws_url": "wss://bbkdashboard.vercel.app/api/hardware/ws",
+    "timeout": 10000,
+    "comment": "Cloud dashboard integration (optional)"
+  },
+  
+  "ui": {
+    "popup_duration": 5000,
+    "sound_enabled": true,
+    "notification_enabled": true,
+    "comment": "UI settings for member info popup duration (milliseconds)"
+  },
+  
+  "logging": {
+    "level": "info",
+    "file": "./logs/app.log",
+    "max_size": "10MB"
+  }
+}
