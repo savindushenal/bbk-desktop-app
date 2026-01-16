@@ -36,9 +36,9 @@
   "python_bridge": {
     "enabled": true,
     "port": 8000,
-    "auto_start": false,
-    "executable": "./python-bridge/main.py",
-    "comment": "Python service for hardware communication (run BBK-Bridge.exe separately)"
+    "auto_start": true,
+    "executable": "BBK-Bridge.exe",
+    "comment": "Python service for hardware communication"
   },
   
   "cloud": {
@@ -46,6 +46,13 @@
     "ws_url": "wss://bbkdashboard.vercel.app/api/hardware/ws",
     "timeout": 10000,
     "comment": "Cloud dashboard integration (optional)"
+  },
+  
+  "ngrok": {
+    "enabled": true,
+    "authtoken": "",
+    "region": "us",
+    "comment": "ngrok tunnel to expose local bridge to cloud dashboard. Get free authtoken from https://ngrok.com"
   },
   
   "ui": {

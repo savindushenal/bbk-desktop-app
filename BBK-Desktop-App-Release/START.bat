@@ -1,85 +1,60 @@
 @echo off
-setlocal enabledelayedexpansion
-title BBK Desktop App Launcher
-color 0A
-
-REM Change to the directory where this batch file is located
 cd /d "%~dp0"
-
-echo ========================================
-echo   BBK Desktop App - Starting...
-echo ========================================
 echo.
-echo Running from: %CD%
-echo NOTE: This window STAYS OPEN while app runs
-echo       Close this window to stop the app
+echo ============================================
+echo   BBK Desktop App - Starting
+echo ============================================
+echo.
+echo Working directory: %CD%
 echo.
 
-REM Check Node.js
-echo [1/4] Checking Node.js...
 where node >nul 2>&1
-if %errorlevel% neq 0 (
-    color 0C
-    echo.
-    echo ERROR: Node.js NOT installed!
-    echo.
+if errorlevel 1 (
+    echo [ERROR] Node.js not installed!
     echo Install from: https://nodejs.org/
     echo.
     pause
     exit /b 1
 )
-for /f "tokens=*" %%i in ('node -v 2^>^&1') do set NODE_VERSION=%%i
-echo [OK] Node.js: %NODE_VERSION%
+
+echo [1/3] Node.js: OK
 echo.
 
-REM Check dependencies
-echo [2/4] Checking dependencies...
 if not exist "node_modules" (
-    echo Installing dependencies (first run, 1-2 min)...
-    echo Working directory: %CD%
+    echo [2/3] Installing dependencies...
+    echo This will take 1-2 minutes...
     echo.
     npm install
-    if !errorlevel! neq 0 (
-        color 0C
+    if errorlevel 1 (
         echo.
-        echo ERROR: Installation failed!
-        echo Check internet connection and try again
-        echo.
+        echo [ERROR] npm install failed!
         pause
         exit /b 1
     )
-    echo [OK] Installed!
 ) else (
-    echo [OK] Already installed
+    echo [2/3] Dependencies: OK
 )
+
+echo.
+echo [3/3] Starting Python Bridge...
+taskkill /F /IM BBK-Bridge.exe >nul 2>&1
+start "BBK Bridge" /min python-bridge\BBK-Bridge.exe
+timeout /t 3 /nobreak >nul
 echo.
 
-REM Start bridge
-echo [3/4] Starting Python Bridge...
-taskkill /F /IM BBK-Bridge.exe 2>nul 1>nul
-if exist "python-bridge\BBK-Bridge.exe" (
-    start "BBK Bridge" /min "%CD%\python-bridge\BBK-Bridge.exe"
-    timeout /t 3 /nobreak >nul
-    echo [OK] Bridge started
-) else (
-    echo [WARN] Bridge not found - hardware features disabled
-)
+echo ============================================
+echo   Starting Electron App
+echo ============================================
 echo.
-
-REM Start app
-echo [4/4] Starting Electron App...
-echo.
-echo ======================================
-echo   APP RUNNING - Keep window open!
-echo ======================================
+echo Window will stay open. Close to stop app.
 echo.
 
 npm start
 
 echo.
-echo ======================================
-echo   App Closed
-echo ======================================
+echo ============================================
+echo   App Stopped
+echo ============================================
 echo.
 pause
 
