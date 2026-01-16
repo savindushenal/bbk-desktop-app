@@ -36,8 +36,10 @@ logger = logging.getLogger(__name__)
 fingerprint_service: Optional[FingerprintService] = None
 doorlock_service: Optional[DoorLockService] = None
 ws_manager: WebSocketManager = WebSocketManager()
-mirror_connections: set = set()
-attendance_connections: set = set()
+
+# WebSocket connection tracking
+mirror_connections = set()
+attendance_connections = set()
 
 
 # Load configuration
@@ -442,7 +444,8 @@ async def mirror_websocket(websocket: WebSocket):
                         disconnected.add(conn)
             
             # Remove disconnected clients
-            mirror_connections -= disconnected
+            for conn in disconnected:
+                mirror_connections.discard(conn)
     
     except WebSocketDisconnect:
         mirror_connections.discard(websocket)
