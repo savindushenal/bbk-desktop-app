@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 import json
+import sys
 from pathlib import Path
 
 from fingerprint_service import FingerprintService
@@ -45,10 +46,23 @@ attendance_connections = set()
 # Load configuration
 def load_config():
     """Load configuration from config.json"""
-    config_path = Path(__file__).parent.parent / "config.json"
+    # When running as PyInstaller executable, look in same directory
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        exe_dir = Path(sys.executable).parent
+        config_path = exe_dir.parent / "config.json"  # Go up one level from python-bridge/
+        logger.info(f"[Frozen] Looking for config at: {config_path}")
+    else:
+        # Running as script
+        config_path = Path(__file__).parent.parent / "config.json"
+        logger.info(f"[Script] Looking for config at: {config_path}")
+    
     if config_path.exists():
+        logger.info(f"✅ Config file found: {config_path}")
         with open(config_path, 'r') as f:
             return json.load(f)
+    else:
+        logger.warning(f"⚠️ Config file not found: {config_path}")
     return None
 
 @asynccontextmanager
@@ -203,6 +217,8 @@ async def handle_electron_command(message: Dict, websocket: WebSocket):
             result = await sync_user_command(payload)
         elif command == "reconnect_device":
             result = await reconnect_device_command()
+        elif command == "open_door":
+            result = await open_door_command(payload)
         else:
             result = {"success": False, "error": "Unknown command"}
         
@@ -414,6 +430,22 @@ async def reconnect_device_command():
         fingerprint_service.reconnect()
         return {"success": True, "message": "Device reconnected"}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def open_door_command(payload: Dict):
+    """Handle door open command"""
+    global doorlock_service
+    
+    if not doorlock_service:
+        return {"success": False, "error": "Door lock service not available"}
+    
+    try:
+        duration = payload.get("duration", 10)  # Default 10 seconds
+        result = doorlock_service.open_door(duration)
+        return {"success": True, "message": f"Door opened for {duration} seconds"}
+    except Exception as e:
+        logger.error(f"Door open error: {e}")
         return {"success": False, "error": str(e)}
 
 

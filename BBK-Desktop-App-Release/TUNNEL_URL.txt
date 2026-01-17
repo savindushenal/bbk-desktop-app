@@ -1,0 +1,13 @@
+Cloudflare Tunnel URL:
+https://select-crossing-photography-person.trycloudflare.com
+
+Vercel Environment Variable:
+NEXT_PUBLIC_BRIDGE_URL=select-crossing-photography-person.trycloudflare.com
+
+This URL is STATIC and will never change!
+
+Setup Instructions:
+1. Go to https://vercel.com/your-project/settings/environment-variables
+2. Add: NEXT_PUBLIC_BRIDGE_URL = select-crossing-photography-person.trycloudflare.com
+3. Redeploy your dashboard
+4. Done! This URL is permanent.

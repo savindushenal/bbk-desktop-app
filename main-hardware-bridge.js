@@ -5,10 +5,11 @@
 
 const { app, BrowserWindow, Menu, ipcMain, screen, Notification } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const WebSocket = require('ws');
 const fs = require('fs');
 const log = require('electron-log');
+const net = require('net');
 
 // Configure logging
 log.transports.file.resolvePathFn = () => path.join(__dirname, 'logs', 'electron.log');
@@ -175,9 +176,42 @@ function createMemberWindow() {
 }
 
 /**
+ * Check if port is available
+ */
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close();
+      resolve(true);
+    });
+    server.listen(port, '0.0.0.0');
+  });
+}
+
+/**
+ * Kill any existing BBK-Bridge processes
+ */
+function killExistingBridge() {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      exec('taskkill /F /IM BBK-Bridge.exe', (error) => {
+        // Ignore error if process not found
+        setTimeout(resolve, 1000); // Wait 1s for cleanup
+      });
+    } else {
+      exec('pkill -9 BBK-Bridge', (error) => {
+        setTimeout(resolve, 1000);
+      });
+    }
+  });
+}
+
+/**
  * Start Python bridge service
  */
-function startPythonBridge() {
+async function startPythonBridge() {
   if (!config.python_bridge.enabled || !config.python_bridge.auto_start) {
     log.info('Python bridge disabled in config');
     return;
@@ -186,14 +220,33 @@ function startPythonBridge() {
   try {
     log.info('Starting Python bridge service...');
     
-    // Determine Python executable
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const scriptPath = config.python_bridge.executable;
+    // Check if port is available
+    const port = config.python_bridge.port || 8000;
+    const portAvailable = await isPortAvailable(port);
     
-    // Spawn Python process
-    pythonProcess = spawn(pythonCmd, [scriptPath], {
-      cwd: path.dirname(scriptPath),
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    if (!portAvailable) {
+      log.warn(`Port ${port} is already in use, killing existing bridge process...`);
+      await killExistingBridge();
+      
+      // Wait and check again
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const stillBusy = !(await isPortAvailable(port));
+      if (stillBusy) {
+        log.error(`Port ${port} still in use after cleanup. Cannot start bridge.`);
+        return;
+      }
+    }
+    
+    // Build full path to BBK-Bridge.exe
+    const exePath = path.join(__dirname, 'python-bridge', config.python_bridge.executable);
+    const workingDir = path.join(__dirname, 'python-bridge');
+    
+    log.info(`Launching bridge: ${exePath}`);
+    
+    // Spawn executable directly (it's a standalone .exe, not a Python script)
+    pythonProcess = spawn(exePath, [], {
+      cwd: workingDir,
+      env: { ...process.env }
     });
     
     pythonProcess.stdout.on('data', (data) => {
@@ -696,7 +749,7 @@ app.on('activate', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async () => {
   log.info('App quitting, cleaning up...');
   
   // Close WebSocket
@@ -704,10 +757,18 @@ app.on('before-quit', () => {
     pythonWs.close();
   }
   
-  // Kill Python process
+  // Kill Python process gracefully
   if (pythonProcess) {
-    pythonProcess.kill();
+    try {
+      pythonProcess.kill('SIGTERM');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (err) {
+      log.error('Error killing python process:', err);
+    }
   }
+  
+  // Force kill any remaining BBK-Bridge processes
+  await killExistingBridge();
 });
 
 // Handle uncaught exceptions

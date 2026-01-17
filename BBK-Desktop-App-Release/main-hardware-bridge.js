@@ -10,7 +10,7 @@ const WebSocket = require('ws');
 const fs = require('fs');
 const log = require('electron-log');
 const net = require('net');
-const ngrok = require('ngrok');
+const { Tunnel } = require('cloudflared');
 
 // Configure logging
 log.transports.file.resolvePathFn = () => path.join(__dirname, 'logs', 'electron.log');
@@ -26,8 +26,9 @@ let pythonWs = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-// ngrok tunnel
-let ngrokUrl = null;
+// Cloudflare Tunnel
+let cloudflaredProcess = null;
+let tunnelUrl = null;
 
 // Configuration
 let config = {};
@@ -276,9 +277,9 @@ async function startPythonBridge() {
     // Wait for service to start, then connect WebSocket
     setTimeout(async () => {
       await connectToPythonBridge();
-      // Start ngrok tunnel if using cloud dashboard
-      if (config.screens.employee.url.includes('vercel.app') || config.ngrok?.enabled) {
-        await startNgrokTunnel();
+      // Start Cloudflare tunnel if using cloud dashboard
+      if (config.screens.employee.url.includes('vercel.app') || config.cloudflare?.enabled) {
+        await startCloudflareTunnel();
       }
     }, 3000);
     
@@ -288,56 +289,111 @@ async function startPythonBridge() {
 }
 
 /**
- * Start ngrok tunnel to expose local bridge to cloud
+ * Start Cloudflare Tunnel to expose local bridge to cloud
+ * Uses authenticated tunnel for PERMANENT static URL
  */
-async function startNgrokTunnel() {
+async function startCloudflareTunnel() {
   try {
-    log.info('Starting ngrok tunnel...');
+    log.info('Starting Cloudflare tunnel...');
     
     const port = config.python_bridge.port || 8000;
-    const authtoken = config.ngrok?.authtoken;
+    const tunnelToken = config.cloudflare?.tunnel_token;
     
-    // Connect to ngrok
-    const url = await ngrok.connect({
-      addr: port,
-      authtoken: authtoken, // Optional: add your ngrok authtoken to config.json
-      region: 'us' // or 'eu', 'ap', 'au', 'sa', 'jp', 'in'
-    });
+    let tunnel;
     
-    ngrokUrl = url;
-    log.info(`✅ ngrok tunnel established: ${ngrokUrl}`);
-    log.info(`🌐 Cloud dashboard can now connect to: ${ngrokUrl.replace('https://', '')}`);
-    
-    // Show notification
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'BBK Bridge - ngrok Tunnel Active',
-        body: `Public URL: ${ngrokUrl}\n\nAdd NEXT_PUBLIC_BRIDGE_URL=${ngrokUrl.replace('https://', '')} to Vercel environment variables.`,
-        timeoutType: 'never'
-      }).show();
+    if (tunnelToken) {
+      // Use authenticated tunnel with token (PERMANENT URL)
+      log.info('Using authenticated Cloudflare tunnel with token...');
+      tunnel = Tunnel.withToken(tunnelToken);
+    } else {
+      // Use quick tunnel (URL changes on restart - not recommended)
+      log.warn('⚠️ No tunnel token configured! URL will change on restart!');
+      log.warn('⚠️ To get a permanent URL, add tunnel_token to config.json');
+      log.warn('⚠️ Visit: https://dash.cloudflare.com to create a tunnel');
+      tunnel = Tunnel.quick(`http://localhost:${port}`);
     }
     
-    // Broadcast to windows
-    broadcastToWindows('ngrok-connected', { url: ngrokUrl });
+    cloudflaredProcess = tunnel;
+    
+    // Wait for tunnel URL
+    tunnel.once('url', (url) => {
+      tunnelUrl = url;
+      const isStatic = tunnelToken ? true : false;
+      
+      log.info(`✅ Cloudflare tunnel established: ${tunnelUrl}`);
+      log.info(`🌐 Cloud dashboard can now connect to: ${tunnelUrl.replace('https://', '')}`);
+      
+      if (isStatic) {
+        log.info(`📌 This URL is PERMANENT and never changes!`);
+      } else {
+        log.warn(`⚠️ This URL is TEMPORARY and will change on restart!`);
+        log.warn(`⚠️ Add tunnel_token to config.json for a permanent URL`);
+      }
+      
+      // Show notification
+      if (Notification.isSupported()) {
+        const title = isStatic 
+          ? 'BBK Bridge - Permanent Tunnel Active'
+          : 'BBK Bridge - Temporary Tunnel (URL Changes on Restart)';
+        
+        const body = isStatic
+          ? `✅ PERMANENT URL: ${tunnelUrl}\n\nAdd to Vercel:\nNEXT_PUBLIC_BRIDGE_URL=${tunnelUrl.replace('https://', '')}\n\n📌 This URL NEVER changes!`
+          : `⚠️ TEMPORARY URL: ${tunnelUrl}\n\nThis URL changes every restart!\n\nTo get a permanent URL:\n1. Visit https://dash.cloudflare.com\n2. Create a tunnel and get token\n3. Add to config.json`;
+        
+        new Notification({
+          title,
+          body,
+          timeoutType: 'never'
+        }).show();
+      }
+      
+      // Save URL to file for reference
+      const urlFile = path.join(__dirname, 'TUNNEL_URL.txt');
+      const instructions = isStatic
+        ? `This URL is PERMANENT and will never change!\n\nSetup Instructions:\n1. Go to https://vercel.com/your-project/settings/environment-variables\n2. Add: NEXT_PUBLIC_BRIDGE_URL = ${tunnelUrl.replace('https://', '')}\n3. Redeploy your dashboard\n4. Done! This URL is permanent.`
+        : `⚠️ WARNING: This URL is TEMPORARY!\nIt will change every time you restart the app.\n\nTo get a PERMANENT URL:\n1. Go to https://dash.cloudflare.com\n2. Click "Zero Trust" → "Networks" → "Tunnels"\n3. Create a tunnel → Get tunnel token\n4. Add to config.json:\n   "cloudflare": {\n     "enabled": true,\n     "tunnel_token": "YOUR_TOKEN_HERE"\n   }\n5. Restart app - you'll get a permanent URL!`;
+      
+      fs.writeFileSync(urlFile, `Cloudflare Tunnel URL:\n${tunnelUrl}\n\nVercel Environment Variable:\nNEXT_PUBLIC_BRIDGE_URL=${tunnelUrl.replace('https://', '')}\n\n${instructions}`);
+      
+      // Broadcast to windows
+      broadcastToWindows('tunnel-connected', { url: tunnelUrl, type: 'cloudflare', isStatic });
+    });
+    
+    // Handle connection events
+    tunnel.once('connected', (connection) => {
+      log.info(`Tunnel connected: ${connection.location} (${connection.ip})`);
+    });
+    
+    // Handle tunnel exit
+    tunnel.on('exit', (code) => {
+      log.warn(`Cloudflare tunnel process exited with code ${code}`);
+      cloudflaredProcess = null;
+      tunnelUrl = null;
+    });
+    
+    // Handle errors
+    tunnel.on('error', (error) => {
+      log.error('Cloudflare tunnel error:', error);
+    });
     
   } catch (error) {
-    log.error('Failed to start ngrok tunnel:', error);
-    log.error('Note: ngrok may require authentication. Add authtoken to config.json');
+    log.error('Failed to start Cloudflare tunnel:', error);
+    log.error('Will retry on next app start');
   }
 }
 
 /**
- * Stop ngrok tunnel
+ * Stop Cloudflare tunnel
  */
-async function stopNgrokTunnel() {
-  if (ngrokUrl) {
+async function stopCloudflareTunnel() {
+  if (cloudflaredProcess) {
     try {
-      await ngrok.disconnect();
-      await ngrok.kill();
-      log.info('ngrok tunnel stopped');
-      ngrokUrl = null;
+      cloudflaredProcess.stop();
+      log.info('Cloudflare tunnel stopped');
+      cloudflaredProcess = null;
+      tunnelUrl = null;
     } catch (error) {
-      log.error('Error stopping ngrok:', error);
+      log.error('Error stopping Cloudflare tunnel:', error);
     }
   }
 }
@@ -817,8 +873,8 @@ app.on('activate', () => {
 app.on('before-quit', async () => {
   log.info('App quitting, cleaning up...');
   
-  // Stop ngrok tunnel
-  await stopNgrokTunnel();
+  // Stop Cloudflare tunnel
+  await stopCloudflareTunnel();
   
   // Close WebSocket
   if (pythonWs) {

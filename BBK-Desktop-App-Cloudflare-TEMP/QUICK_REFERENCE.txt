@@ -1,0 +1,161 @@
+╔══════════════════════════════════════════════════════════════════╗
+║                 BBK DESKTOP APP - QUICK REFERENCE                ║
+║                        Version 1.0.0                             ║
+╚══════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 🚀 QUICK START                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+1. EXTRACT PACKAGE
+   - Unzip BBK-Desktop-App-v1.0.0.zip to C:\BBK-Desktop-App\
+
+2. CONFIGURE HARDWARE
+   - Open config.json in Notepad
+   - Set fingerprint IP: hardware.fingerprint.ip = "192.168.1.201"
+   - Set door lock port: hardware.doorlock.port = "COM7"
+
+3. LAUNCH APPLICATION
+   - Double-click START.bat
+   - Wait for both windows to open
+   - Test fingerprint attendance
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 🔧 HARDWARE CONFIGURATION                                        │
+└──────────────────────────────────────────────────────────────────┘
+
+FINGERPRINT DEVICE (ZKTeco)
+├─ Connection: Ethernet cable
+├─ Default IP: 192.168.1.201
+├─ Port: 4370
+└─ How to find IP: Check device LCD or use ZKAccess software
+
+DOOR LOCK (Serial)
+├─ Connection: USB cable
+├─ Default Port: COM7
+├─ Baudrate: 9600
+└─ How to find port: Device Manager → Ports (COM & LPT)
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 💡 COMMON TASKS                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+CHANGE FINGERPRINT IP
+  1. Open config.json
+  2. Find: "hardware" → "fingerprint" → "ip"
+  3. Change: "192.168.1.201" to your device IP
+  4. Save and restart app
+
+CHANGE DOOR LOCK COM PORT
+  1. Open config.json
+  2. Find: "hardware" → "doorlock" → "port"
+  3. Change: "COM7" to your port (e.g., "COM3")
+  4. Save and restart app
+
+TEST HARDWARE CONNECTION
+  Fingerprint: ping 192.168.1.201
+  Door Lock: Open Device Manager, check "Ports"
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 🖥️ DISPLAY SETUP                                                │
+└──────────────────────────────────────────────────────────────────┘
+
+DUAL MONITOR CONFIGURATION
+├─ Monitor 1 (Primary): Employee Dashboard
+│  └─ Shows member management, attendance, reports
+└─ Monitor 2 (Secondary): Member Kiosk Screen
+   └─ Shows promotional media + member check-in
+
+SINGLE MONITOR MODE
+  - Set both display_index to 0 in config.json
+  - Windows will overlap (not recommended)
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 🌐 CLOUD ENDPOINTS                                               │
+└──────────────────────────────────────────────────────────────────┘
+
+Production:      https://bbkdashboard.vercel.app
+Employee Portal: https://bbkdashboard.vercel.app/dashboard
+Member Screen:   https://bbkdashboard.vercel.app/member-screen
+API Endpoint:    http://localhost:8000 (Python Bridge)
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 🛠️ TROUBLESHOOTING                                              │
+└──────────────────────────────────────────────────────────────────┘
+
+BRIDGE WON'T START
+├─ Check: Port 8000 already in use?
+│  Command: netstat -ano | findstr :8000
+└─ Solution: Kill process or restart computer
+
+FINGERPRINT NOT WORKING
+├─ Check: Can you ping the device?
+│  Command: ping 192.168.1.201
+├─ Check: Is IP correct in config.json?
+└─ Solution: Verify cable, power, and IP address
+
+DOOR LOCK NOT WORKING
+├─ Check: Is COM port correct?
+│  Open: Device Manager → Ports (COM & LPT)
+├─ Check: Is cable plugged in?
+└─ Solution: Try different USB port
+
+SCREENS NOT SYNCING
+├─ Check: Is BBK-Bridge.exe running?
+│  Open: Task Manager → Details tab
+└─ Solution: Restart START.bat
+
+APP WON'T LAUNCH
+├─ Check: Internet connection active?
+├─ Check: Node.js installed? (node -v)
+└─ Solution: Delete node_modules, run: npm install --production
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 📁 FILE LOCATIONS                                                │
+└──────────────────────────────────────────────────────────────────┘
+
+Configuration:    config.json (edit with Notepad)
+Logs:             logs/ folder
+Bridge Exe:       python-bridge\BBK-Bridge.exe
+Startup Script:   START.bat
+Documentation:    README.txt, DEPLOYMENT_GUIDE.md
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 📋 SYSTEM INFO                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+Package Size:    37.23 MB
+Bridge Size:     37.53 MB (BBK-Bridge.exe)
+Dependencies:    60 runtime files
+Platform:        Windows 10/11 (64-bit)
+Requirements:    4GB RAM, Internet connection, Dual monitors
+
+┌──────────────────────────────────────────────────────────────────┐
+│ ✅ PRE-FLIGHT CHECKLIST                                         │
+└──────────────────────────────────────────────────────────────────┘
+
+Before going live:
+  [ ] Package extracted
+  [ ] config.json edited
+  [ ] Fingerprint device IP configured
+  [ ] Door lock COM port configured
+  [ ] Fingerprint device connected (ping test passed)
+  [ ] Door lock connected (visible in Device Manager)
+  [ ] START.bat executed successfully
+  [ ] Both windows opened (employee + member)
+  [ ] Test fingerprint scan (door should open)
+  [ ] Test member profile display on kiosk
+  [ ] Logs generating in logs/ folder
+  [ ] Backup of config.json created
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 📞 SUPPORT                                                       │
+└──────────────────────────────────────────────────────────────────┘
+
+Documentation:   See DEPLOYMENT_GUIDE.md for detailed instructions
+Logs:            Check logs/ folder for error details
+Cloud Status:    https://bbkdashboard.vercel.app
+
+═══════════════════════════════════════════════════════════════════
+          BBK Desktop App v1.0.0 - All Rights Reserved
+═══════════════════════════════════════════════════════════════════

@@ -1,0 +1,27 @@
+# Files to exclude from deployment zip
+
+# Logs
+logs/
+*.log
+
+# Development
+node_modules/
+.git/
+.gitignore
+
+# Temporary files
+*.tmp
+*.temp
+TUNNEL_URL.txt
+NGROK_SETUP_OLD.md
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo

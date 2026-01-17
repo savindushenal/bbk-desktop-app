@@ -48,11 +48,10 @@
     "comment": "Cloud dashboard integration (optional)"
   },
   
-  "ngrok": {
+  "cloudflare": {
     "enabled": true,
-    "authtoken": "",
-    "region": "us",
-    "comment": "ngrok tunnel to expose local bridge to cloud dashboard. Get free authtoken from https://ngrok.com"
+    "tunnel_token": "eyJhIjoiYjk2MWM0NTQwY2YzY2U0OGVjMTFhMTVjNjk5ZWM1NzYiLCJ0IjoiZDM2NjNmZWMtNmViYy00MWM0LTk3ZmItNmFmNzFmZWE0NDVlIiwicyI6IlpURTBOMk0wTTJVdE16VmlOeTAwTVRKakxXSTJaVEV0WVRoaE5UYzJOalpoT1dKayJ9",
+    "comment": "Leave tunnel_token empty for quick tunnel (URL changes). Add token from https://dash.cloudflare.com for PERMANENT URL."
   },
   
   "ui": {
