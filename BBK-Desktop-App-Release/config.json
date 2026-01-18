@@ -2,6 +2,7 @@
   "version": "1.0.0",
   "app_name": "BBK Hardware Bridge",
   "gym_id": 1,
+  "gym_name": "BBK Boho Fitness - Main Branch",
   
   "screens": {
     "employee": {

@@ -525,6 +525,16 @@ async def root():
     }
 
 
+@app.get("/gym-config")
+async def get_gym_config():
+    """Get gym configuration (gym_id)"""    config = load_config()
+    return {
+        "success": True,
+        "gym_id": config.get("gym_id", 1) if config else 1,
+        "gym_name": config.get("gym_name", "BBK Fitness") if config else "BBK Fitness"
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     
