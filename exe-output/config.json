@@ -36,9 +36,9 @@
   "python_bridge": {
     "enabled": true,
     "port": 8000,
-    "auto_start": true,
+    "auto_start": false,
     "executable": "./python-bridge/main.py",
-    "comment": "Python service for hardware communication"
+    "comment": "Python service for hardware communication (run BBK-Bridge.exe separately)"
   },
   
   "cloud": {
