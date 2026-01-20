@@ -115,17 +115,7 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[WARN] Fingerprint service not available: {e}")
             fingerprint_service = None
         
-        # Log startup status
-        hardware_status = []
-        if doorlock_service:
-            hardware_status.append("Door Lock")
-        if fingerprint_service:
-            hardware_status.append("Fingerprint")
-        
-        if hardware_status:
-            logger.info(f"[STARTED] Python Bridge started with: {', '.join(hardware_status)}")
-        else:
-            logger.info("[STARTED] Python Bridge started (hardware optional mode - no devices connected)")
+        logger.info("[STARTED] Python Bridge started (hardware optional mode)")
         
         yield
         
@@ -150,13 +140,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS middleware - Allow all origins for cloud deployment
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
