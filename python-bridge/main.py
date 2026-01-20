@@ -115,7 +115,17 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[WARN] Fingerprint service not available: {e}")
             fingerprint_service = None
         
-        logger.info("[STARTED] Python Bridge started (hardware optional mode)")
+        # Log startup status
+        hardware_status = []
+        if doorlock_service:
+            hardware_status.append("Door Lock")
+        if fingerprint_service:
+            hardware_status.append("Fingerprint")
+        
+        if hardware_status:
+            logger.info(f"[STARTED] Python Bridge started with: {', '.join(hardware_status)}")
+        else:
+            logger.info("[STARTED] Python Bridge started (hardware optional mode - no devices connected)")
         
         yield
         
