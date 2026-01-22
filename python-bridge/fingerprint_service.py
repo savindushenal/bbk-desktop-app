@@ -31,6 +31,7 @@ class FingerprintService:
         self.port = port
         self.timeout = timeout
         self.ws_manager = ws_manager
+        self.event_loop = None  # Store reference to event loop
         
         self.zk = ZK(ip, port=port, timeout=timeout, password=0, force_udp=False, ommit_ping=False)
         self.conn = None
@@ -173,29 +174,46 @@ class FingerprintService:
             user_exists = any(u.user_id == str(user_id) for u in existing_users)
             
             if user_exists:
-                logger.warning(f"User {user_id} already exists, updating fingerprint")
+                logger.warning(f"User {user_id} already exists, will update fingerprint")
+                # Delete existing user to re-enroll
+                try:
+                    self.conn.delete_user(uid=user_id)
+                    logger.info(f"Deleted existing user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Could not delete existing user: {e}")
             
-            # Start enrollment process
-            # This is a blocking operation that requires user to scan finger 3 times
-            # In real implementation, you would need to:
-            # 1. Put device in enrollment mode
-            # 2. Wait for finger scans (usually 3 times)
-            # 3. Store the template
-            
-            # For now, we'll emit events to guide the user
+            # Emit enrollment started event
             await self.emit_event({
                 "type": "enrollment_started",
                 "user_id": user_id,
                 "finger_id": finger_id,
-                "instructions": "Place finger on scanner (scan 1 of 3)"
+                "instructions": "Place finger on scanner - enrollment starting..."
             })
             
-            # Simulate enrollment process
-            # In real implementation, you'd use conn.enroll_user() or similar
-            # The pyzk library has different methods depending on device model
-            
-            # Re-enable device
+            # Enable device for enrollment
             self.conn.enable_device()
+            
+            logger.info(f"Starting enrollment for user {user_id} using conn.enroll_user()...")
+            
+            # This is the CORRECT way - use pyzk's built-in enroll_user method
+            # This method:
+            # 1. Puts device in enrollment mode
+            # 2. Waits for user to scan finger 3 times
+            # 3. Captures and stores fingerprint template automatically
+            # 4. Is a blocking operation (will wait for real scans)
+            
+            # Run the blocking enroll_user in an executor to not block the async event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.conn.enroll_user, user_id, finger_id)
+            
+            logger.info(f"Enrollment completed for user {user_id}")
+            
+            # Play success sound on device (if supported)
+            try:
+                self.conn.test_voice(0)
+                logger.info("Played success sound on device")
+            except Exception as e:
+                logger.warning(f"Could not play voice: {e}")
             
             # Emit success event
             await self.emit_event({
@@ -204,8 +222,6 @@ class FingerprintService:
                 "finger_id": finger_id,
                 "success": True
             })
-            
-            logger.info(f"Enrollment completed for user {user_id}")
             
             return {
                 "success": True,
@@ -264,7 +280,17 @@ class FingerprintService:
         self.is_capturing = True
         logger.info("Starting live capture mode...")
         
+        # Save event loop reference for thread worker
+        self.event_loop = asyncio.get_event_loop()
+        
+        # Run the blocking live_capture in a thread executor
+        await self.event_loop.run_in_executor(None, self._live_capture_worker)
+    
+    def _live_capture_worker(self):
+        """Worker function that runs in a thread to handle blocking live_capture"""
         try:
+            logger.info("Live capture worker started")
+            
             # This is a blocking generator that yields attendance records
             for attendance in self.conn.live_capture():
                 if not self.is_capturing:
@@ -273,38 +299,48 @@ class FingerprintService:
                 if attendance:
                     logger.info(f"Finger detected: user_id={attendance.user_id}, time={attendance.timestamp}")
                     
-                    # Emit event to WebSocket clients (Electron)
-                    await self.emit_event({
-                        "type": "finger_scanned",
-                        "user_id": attendance.user_id,
-                        "timestamp": attendance.timestamp.isoformat(),
-                        "punch_type": attendance.punch,
-                        "punch_name": self.get_punch_name(attendance.punch)
-                    })
+                    # Emit event to WebSocket clients
+                    if self.ws_manager:
+                        # Create event data
+                        event_data = {
+                            "type": "finger_scanned",
+                            "user_id": attendance.user_id,
+                            "timestamp": attendance.timestamp.isoformat(),
+                            "punch_type": attendance.punch,
+                            "punch_name": self.get_punch_name(attendance.punch)
+                        }
+                        
+                        # Schedule emit_event in the main event loop
+                        asyncio.run_coroutine_threadsafe(
+                            self.emit_event(event_data),
+                            self.event_loop
+                        )
                     
                     # Small delay to prevent overwhelming the system
-                    await asyncio.sleep(0.1)
+                    import time
+                    time.sleep(0.1)
         
         except ZKNetworkError as e:
             logger.error(f"Network error during live capture: {e}")
-            await self.emit_event({
-                "type": "device_disconnected",
-                "error": str(e)
-            })
-            # Attempt reconnection
-            await asyncio.sleep(5)
-            try:
-                self.reconnect()
-                await self.start_live_capture()  # Restart capture
-            except Exception as reconnect_error:
-                logger.error(f"Reconnection failed: {reconnect_error}")
+            if self.ws_manager and self.event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self.emit_event({
+                        "type": "device_disconnected",
+                        "error": str(e)
+                    }),
+                    self.event_loop
+                )
         
         except Exception as e:
             logger.error(f"Error in live capture: {e}")
-            await self.emit_event({
-                "type": "capture_error",
-                "error": str(e)
-            })
+            if self.ws_manager and self.event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self.emit_event({
+                        "type": "capture_error",
+                        "error": str(e)
+                    }),
+                    self.event_loop
+                )
         
         finally:
             self.is_capturing = False

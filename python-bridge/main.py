@@ -105,9 +105,12 @@ async def lifespan(app: FastAPI):
                 fingerprint_port = config["hardware"]["fingerprint"].get("port", 4370)
             
             logger.info(f"Initializing fingerprint device at {fingerprint_ip}:{fingerprint_port}")
-            fingerprint_service = FingerprintService(ip=fingerprint_ip, port=fingerprint_port)
+            fingerprint_service = FingerprintService(ip=fingerprint_ip, port=fingerprint_port, ws_manager=ws_manager)
             if fingerprint_service.connect():
                 logger.info("[OK] Fingerprint service initialized")
+                # Start live capture automatically
+                asyncio.create_task(fingerprint_service.start_live_capture())
+                logger.info("[OK] Live capture started automatically")
             else:
                 logger.warning("[WARN] Fingerprint device not connected")
                 fingerprint_service = None
@@ -276,6 +279,64 @@ async def enroll_fingerprint(user_id: int, finger_id: int = 1):
     try:
         result = await fingerprint_service.enroll_user(user_id, finger_id)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/fingerprint/capture/start")
+async def start_fingerprint_capture():
+    """Start live capture mode for real-time attendance"""
+    try:
+        if not fingerprint_service:
+            raise HTTPException(status_code=503, detail="Fingerprint service not available")
+        
+        if fingerprint_service.is_capturing:
+            return {"success": True, "message": "Live capture already running"}
+        
+        # Start live capture in background
+        asyncio.create_task(fingerprint_service.start_live_capture())
+        
+        return {
+            "success": True,
+            "message": "Live capture started"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/fingerprint/capture/stop")
+async def stop_fingerprint_capture():
+    """Stop live capture mode"""
+    try:
+        if not fingerprint_service:
+            raise HTTPException(status_code=503, detail="Fingerprint service not available")
+        
+        fingerprint_service.stop_live_capture()
+        
+        return {
+            "success": True,
+            "message": "Live capture stopped"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/fingerprint/capture/status")
+async def get_capture_status():
+    """Get live capture status"""
+    try:
+        if not fingerprint_service:
+            return {
+                "success": False,
+                "is_capturing": False,
+                "message": "Fingerprint service not available"
+            }
+        
+        return {
+            "success": True,
+            "is_capturing": fingerprint_service.is_capturing,
+            "is_connected": fingerprint_service.is_connected()
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

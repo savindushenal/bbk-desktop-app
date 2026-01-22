@@ -2,6 +2,7 @@
   "version": "1.0.0",
   "app_name": "BBK Hardware Bridge",
   "gym_id": 1,
+  "gym_name": "BBK Boho Fitness - Main Branch",
   
   "screens": {
     "employee": {
@@ -36,9 +37,9 @@
   "python_bridge": {
     "enabled": true,
     "port": 8000,
-    "auto_start": false,
-    "executable": "./python-bridge/main.py",
-    "comment": "Python service for hardware communication (run BBK-Bridge.exe separately)"
+    "auto_start": true,
+    "executable": "BBK-Bridge.exe",
+    "comment": "Python service for hardware communication"
   },
   
   "cloud": {
@@ -46,6 +47,12 @@
     "ws_url": "wss://bbkdashboard.vercel.app/api/hardware/ws",
     "timeout": 10000,
     "comment": "Cloud dashboard integration (optional)"
+  },
+  
+  "cloudflare": {
+    "enabled": true,
+    "tunnel_token": "eyJhIjoiYjk2MWM0NTQwY2YzY2U0OGVjMTFhMTVjNjk5ZWM1NzYiLCJ0IjoiZDM2NjNmZWMtNmViYy00MWM0LTk3ZmItNmFmNzFmZWE0NDVlIiwicyI6IlpURTBOMk0wTTJVdE16VmlOeTAwTVRKakxXSTJaVEV0WVRoaE5UYzJOalpoT1dKayJ9",
+    "comment": "Leave tunnel_token empty for quick tunnel (URL changes). Add token from https://dash.cloudflare.com for PERMANENT URL."
   },
   
   "ui": {

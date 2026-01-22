@@ -11,6 +11,8 @@ const fs = require('fs');
 const log = require('electron-log');
 const net = require('net');
 const { Tunnel } = require('cloudflared');
+const https = require('https');
+const http = require('http');
 
 // Configure logging
 log.transports.file.resolvePathFn = () => path.join(__dirname, 'logs', 'electron.log');
@@ -35,6 +37,33 @@ let config = {};
 
 // Event queue for offline mode
 const eventQueue = [];
+
+/**
+ * Simple fetch wrapper using native http/https
+ */
+function fetch(url) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    
+    protocol.get(url, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          json: () => Promise.resolve(JSON.parse(data))
+        });
+      });
+    }).on('error', (err) => {
+      reject(err);
+    });
+  });
+}
 
 /**
  * Load configuration from config.json
@@ -499,30 +528,108 @@ async function handleFingerScanned(data) {
   
   log.info(`Finger scanned: user_id=${user_id}, punch_type=${punch_type}`);
   
-  // Query member details from cloud or local cache
-  // For now, broadcast the event to all windows
-  broadcastToWindows('finger-scanned', data);
-  
-  // Show member info on member screen
-  if (memberWindow) {
-    memberWindow.webContents.send('show-member-info', {
-      user_id,
-      timestamp,
-      punch_type
-    });
+  try {
+    // Fetch member details from API
+    const apiUrl = config.cloud?.api_url || 'https://bbk.absterco.com';
+    const response = await fetch(`${apiUrl}/api/members/${user_id}`);
     
-    // Auto-hide after configured duration
-    setTimeout(() => {
-      if (memberWindow) {
-        memberWindow.webContents.send('hide-member-info');
+    if (!response.ok) {
+      log.error(`Failed to fetch member ${user_id}: ${response.status}`);
+      showNotification('Error', 'Member not found', 'error');
+      return;
+    }
+    
+    const result = await response.json();
+    const member = result.data;
+    
+    // Get the most recent activation
+    const activations = member.registration_gym_members || [];
+    const latestActivation = activations.length > 0 ? activations[0] : null;
+    
+    // Check if member has valid activation
+    let isValid = false;
+    let accessMessage = '';
+    
+    if (latestActivation && latestActivation.end_date) {
+      const endDate = new Date(latestActivation.end_date);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      endDate.setHours(0, 0, 0, 0);
+      
+      isValid = endDate >= today;
+      
+      if (isValid) {
+        accessMessage = 'Access Granted - Welcome!';
+        log.info(`Member ${user_id} has valid access until ${latestActivation.end_date}`);
+        
+        // Open door
+        await openDoor();
+      } else {
+        accessMessage = 'Access Denied - Membership Expired';
+        log.warn(`Member ${user_id} membership expired on ${latestActivation.end_date}`);
       }
-    }, config.ui.popup_duration);
+    } else {
+      accessMessage = 'Access Denied - No Active Membership';
+      log.warn(`Member ${user_id} has no activation record`);
+    }
+    
+    // Prepare member data to display
+    const memberData = {
+      user_id,
+      name: `${member.fname} ${member.lname}`,
+      phone: member.telephone_no,
+      expiry_date: latestActivation?.end_date || 'N/A',
+      is_valid: isValid,
+      message: accessMessage,
+      timestamp
+    };
+    
+    // Show popup on all screens
+    broadcastToWindows('show-member-popup', memberData);
+    
+    // Auto-close after 5 seconds
+    setTimeout(() => {
+      broadcastToWindows('hide-member-popup');
+    }, 5000);
+    
+    // Show notification
+    showNotification(
+      isValid ? 'Access Granted' : 'Access Denied',
+      `${memberData.name} - ${accessMessage}`,
+      isValid ? 'info' : 'error'
+    );
+    
+  } catch (error) {
+    log.error('Error handling finger scan:', error);
+    showNotification('Error', 'Failed to process attendance', 'error');
   }
-  
-  // Optionally open door
-  // This logic should check member expiry status first
-  // For now, we'll just log it
-  log.info(`Would check member ${user_id} expiry and open door if valid`);
+}
+
+/**
+ * Open door by sending command to fingerprint device
+ */
+async function openDoor() {
+  try {
+    if (!pythonWs || pythonWs.readyState !== WebSocket.OPEN) {
+      log.error('Cannot open door: Python bridge not connected');
+      return;
+    }
+    
+    log.info('Opening door...');
+    
+    // Send door control command to Python bridge
+    pythonWs.send(JSON.stringify({
+      action: 'control_door',
+      data: {
+        action: 'open',
+        duration: config.door?.open_duration || 3
+      }
+    }));
+    
+    log.info('Door open command sent');
+  } catch (error) {
+    log.error('Error opening door:', error);
+  }
 }
 
 /**
