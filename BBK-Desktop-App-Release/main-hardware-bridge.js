@@ -278,8 +278,12 @@ async function startPythonBridge() {
     setTimeout(async () => {
       await connectToPythonBridge();
       // Start Cloudflare tunnel if using cloud dashboard
-      if (config.screens.employee.url.includes('vercel.app') || config.cloudflare?.enabled) {
+      const shouldStartTunnel = config.screens.employee.url.includes('vercel.app') || config.cloudflare?.enabled;
+      log.info(`Tunnel check: vercel=${config.screens.employee.url.includes('vercel.app')}, cloudflare.enabled=${config.cloudflare?.enabled}, shouldStart=${shouldStartTunnel}`);
+      if (shouldStartTunnel) {
         await startCloudflareTunnel();
+      } else {
+        log.warn('Cloudflare tunnel disabled - running in local-only mode');
       }
     }, 3000);
     
@@ -460,26 +464,26 @@ async function handlePythonEvent(event) {
   
   switch (event.type) {
     case 'finger_scanned':
-      await handleFingerScanned(event.data);
+      await handleFingerScanned(event);
       break;
     
     case 'enrollment_started':
-      broadcastToWindows('enrollment-started', event.data);
+      broadcastToWindows('enrollment-started', event);
       break;
     
     case 'enrollment_complete':
-      broadcastToWindows('enrollment-complete', event.data);
-      showNotification('Enrollment Complete', `User ${event.data.user_id} enrolled successfully`);
+      broadcastToWindows('enrollment-complete', event);
+      showNotification('Enrollment Complete', `User ${event.user_id} enrolled successfully`);
       break;
     
     case 'enrollment_error':
-      broadcastToWindows('enrollment-error', event.data);
-      showNotification('Enrollment Failed', event.data.error, 'error');
+      broadcastToWindows('enrollment-error', event);
+      showNotification('Enrollment Failed', event.error, 'error');
       break;
     
     case 'device_disconnected':
       showNotification('Device Disconnected', 'Fingerprint device lost connection', 'error');
-      broadcastToWindows('device-disconnected', event.data);
+      broadcastToWindows('device-disconnected', event);
       break;
     
     default:

@@ -5,10 +5,12 @@
 
 const { app, BrowserWindow, Menu, ipcMain, screen, Notification } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const WebSocket = require('ws');
 const fs = require('fs');
 const log = require('electron-log');
+const net = require('net');
+const { Tunnel } = require('cloudflared');
 
 // Configure logging
 log.transports.file.resolvePathFn = () => path.join(__dirname, 'logs', 'electron.log');
@@ -23,6 +25,10 @@ let pythonProcess = null;
 let pythonWs = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
+
+// Cloudflare Tunnel
+let cloudflaredProcess = null;
+let tunnelUrl = null;
 
 // Configuration
 let config = {};
@@ -175,9 +181,42 @@ function createMemberWindow() {
 }
 
 /**
+ * Check if port is available
+ */
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close();
+      resolve(true);
+    });
+    server.listen(port, '0.0.0.0');
+  });
+}
+
+/**
+ * Kill any existing BBK-Bridge processes
+ */
+function killExistingBridge() {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      exec('taskkill /F /IM BBK-Bridge.exe', (error) => {
+        // Ignore error if process not found
+        setTimeout(resolve, 1000); // Wait 1s for cleanup
+      });
+    } else {
+      exec('pkill -9 BBK-Bridge', (error) => {
+        setTimeout(resolve, 1000);
+      });
+    }
+  });
+}
+
+/**
  * Start Python bridge service
  */
-function startPythonBridge() {
+async function startPythonBridge() {
   if (!config.python_bridge.enabled || !config.python_bridge.auto_start) {
     log.info('Python bridge disabled in config');
     return;
@@ -186,14 +225,33 @@ function startPythonBridge() {
   try {
     log.info('Starting Python bridge service...');
     
-    // Determine Python executable
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const scriptPath = config.python_bridge.executable;
+    // Check if port is available
+    const port = config.python_bridge.port || 8000;
+    const portAvailable = await isPortAvailable(port);
     
-    // Spawn Python process
-    pythonProcess = spawn(pythonCmd, [scriptPath], {
-      cwd: path.dirname(scriptPath),
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    if (!portAvailable) {
+      log.warn(`Port ${port} is already in use, killing existing bridge process...`);
+      await killExistingBridge();
+      
+      // Wait and check again
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const stillBusy = !(await isPortAvailable(port));
+      if (stillBusy) {
+        log.error(`Port ${port} still in use after cleanup. Cannot start bridge.`);
+        return;
+      }
+    }
+    
+    // Build full path to BBK-Bridge.exe
+    const exePath = path.join(__dirname, 'python-bridge', config.python_bridge.executable);
+    const workingDir = path.join(__dirname, 'python-bridge');
+    
+    log.info(`Launching bridge: ${exePath}`);
+    
+    // Spawn executable directly (it's a standalone .exe, not a Python script)
+    pythonProcess = spawn(exePath, [], {
+      cwd: workingDir,
+      env: { ...process.env }
     });
     
     pythonProcess.stdout.on('data', (data) => {
@@ -217,10 +275,130 @@ function startPythonBridge() {
     });
     
     // Wait for service to start, then connect WebSocket
-    setTimeout(connectToPythonBridge, 3000);
+    setTimeout(async () => {
+      await connectToPythonBridge();
+      // Start Cloudflare tunnel if using cloud dashboard
+      const shouldStartTunnel = config.screens.employee.url.includes('vercel.app') || config.cloudflare?.enabled;
+      log.info(`Tunnel check: vercel=${config.screens.employee.url.includes('vercel.app')}, cloudflare.enabled=${config.cloudflare?.enabled}, shouldStart=${shouldStartTunnel}`);
+      if (shouldStartTunnel) {
+        await startCloudflareTunnel();
+      } else {
+        log.warn('Cloudflare tunnel disabled - running in local-only mode');
+      }
+    }, 3000);
     
   } catch (error) {
     log.error('Failed to start Python bridge:', error);
+  }
+}
+
+/**
+ * Start Cloudflare Tunnel to expose local bridge to cloud
+ * Uses authenticated tunnel for PERMANENT static URL
+ */
+async function startCloudflareTunnel() {
+  try {
+    log.info('Starting Cloudflare tunnel...');
+    
+    const port = config.python_bridge.port || 8000;
+    const tunnelToken = config.cloudflare?.tunnel_token;
+    
+    let tunnel;
+    
+    if (tunnelToken) {
+      // Use authenticated tunnel with token (PERMANENT URL)
+      log.info('Using authenticated Cloudflare tunnel with token...');
+      tunnel = Tunnel.withToken(tunnelToken);
+    } else {
+      // Use quick tunnel (URL changes on restart - not recommended)
+      log.warn('⚠️ No tunnel token configured! URL will change on restart!');
+      log.warn('⚠️ To get a permanent URL, add tunnel_token to config.json');
+      log.warn('⚠️ Visit: https://dash.cloudflare.com to create a tunnel');
+      tunnel = Tunnel.quick(`http://localhost:${port}`);
+    }
+    
+    cloudflaredProcess = tunnel;
+    
+    // Wait for tunnel URL
+    tunnel.once('url', (url) => {
+      tunnelUrl = url;
+      const isStatic = tunnelToken ? true : false;
+      
+      log.info(`✅ Cloudflare tunnel established: ${tunnelUrl}`);
+      log.info(`🌐 Cloud dashboard can now connect to: ${tunnelUrl.replace('https://', '')}`);
+      
+      if (isStatic) {
+        log.info(`📌 This URL is PERMANENT and never changes!`);
+      } else {
+        log.warn(`⚠️ This URL is TEMPORARY and will change on restart!`);
+        log.warn(`⚠️ Add tunnel_token to config.json for a permanent URL`);
+      }
+      
+      // Show notification
+      if (Notification.isSupported()) {
+        const title = isStatic 
+          ? 'BBK Bridge - Permanent Tunnel Active'
+          : 'BBK Bridge - Temporary Tunnel (URL Changes on Restart)';
+        
+        const body = isStatic
+          ? `✅ PERMANENT URL: ${tunnelUrl}\n\nAdd to Vercel:\nNEXT_PUBLIC_BRIDGE_URL=${tunnelUrl.replace('https://', '')}\n\n📌 This URL NEVER changes!`
+          : `⚠️ TEMPORARY URL: ${tunnelUrl}\n\nThis URL changes every restart!\n\nTo get a permanent URL:\n1. Visit https://dash.cloudflare.com\n2. Create a tunnel and get token\n3. Add to config.json`;
+        
+        new Notification({
+          title,
+          body,
+          timeoutType: 'never'
+        }).show();
+      }
+      
+      // Save URL to file for reference
+      const urlFile = path.join(__dirname, 'TUNNEL_URL.txt');
+      const instructions = isStatic
+        ? `This URL is PERMANENT and will never change!\n\nSetup Instructions:\n1. Go to https://vercel.com/your-project/settings/environment-variables\n2. Add: NEXT_PUBLIC_BRIDGE_URL = ${tunnelUrl.replace('https://', '')}\n3. Redeploy your dashboard\n4. Done! This URL is permanent.`
+        : `⚠️ WARNING: This URL is TEMPORARY!\nIt will change every time you restart the app.\n\nTo get a PERMANENT URL:\n1. Go to https://dash.cloudflare.com\n2. Click "Zero Trust" → "Networks" → "Tunnels"\n3. Create a tunnel → Get tunnel token\n4. Add to config.json:\n   "cloudflare": {\n     "enabled": true,\n     "tunnel_token": "YOUR_TOKEN_HERE"\n   }\n5. Restart app - you'll get a permanent URL!`;
+      
+      fs.writeFileSync(urlFile, `Cloudflare Tunnel URL:\n${tunnelUrl}\n\nVercel Environment Variable:\nNEXT_PUBLIC_BRIDGE_URL=${tunnelUrl.replace('https://', '')}\n\n${instructions}`);
+      
+      // Broadcast to windows
+      broadcastToWindows('tunnel-connected', { url: tunnelUrl, type: 'cloudflare', isStatic });
+    });
+    
+    // Handle connection events
+    tunnel.once('connected', (connection) => {
+      log.info(`Tunnel connected: ${connection.location} (${connection.ip})`);
+    });
+    
+    // Handle tunnel exit
+    tunnel.on('exit', (code) => {
+      log.warn(`Cloudflare tunnel process exited with code ${code}`);
+      cloudflaredProcess = null;
+      tunnelUrl = null;
+    });
+    
+    // Handle errors
+    tunnel.on('error', (error) => {
+      log.error('Cloudflare tunnel error:', error);
+    });
+    
+  } catch (error) {
+    log.error('Failed to start Cloudflare tunnel:', error);
+    log.error('Will retry on next app start');
+  }
+}
+
+/**
+ * Stop Cloudflare tunnel
+ */
+async function stopCloudflareTunnel() {
+  if (cloudflaredProcess) {
+    try {
+      cloudflaredProcess.stop();
+      log.info('Cloudflare tunnel stopped');
+      cloudflaredProcess = null;
+      tunnelUrl = null;
+    } catch (error) {
+      log.error('Error stopping Cloudflare tunnel:', error);
+    }
   }
 }
 
@@ -286,26 +464,26 @@ async function handlePythonEvent(event) {
   
   switch (event.type) {
     case 'finger_scanned':
-      await handleFingerScanned(event.data);
+      await handleFingerScanned(event);
       break;
     
     case 'enrollment_started':
-      broadcastToWindows('enrollment-started', event.data);
+      broadcastToWindows('enrollment-started', event);
       break;
     
     case 'enrollment_complete':
-      broadcastToWindows('enrollment-complete', event.data);
-      showNotification('Enrollment Complete', `User ${event.data.user_id} enrolled successfully`);
+      broadcastToWindows('enrollment-complete', event);
+      showNotification('Enrollment Complete', `User ${event.user_id} enrolled successfully`);
       break;
     
     case 'enrollment_error':
-      broadcastToWindows('enrollment-error', event.data);
-      showNotification('Enrollment Failed', event.data.error, 'error');
+      broadcastToWindows('enrollment-error', event);
+      showNotification('Enrollment Failed', event.error, 'error');
       break;
     
     case 'device_disconnected':
       showNotification('Device Disconnected', 'Fingerprint device lost connection', 'error');
-      broadcastToWindows('device-disconnected', event.data);
+      broadcastToWindows('device-disconnected', event);
       break;
     
     default:
@@ -696,18 +874,29 @@ app.on('activate', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async () => {
   log.info('App quitting, cleaning up...');
+  
+  // Stop Cloudflare tunnel
+  await stopCloudflareTunnel();
   
   // Close WebSocket
   if (pythonWs) {
     pythonWs.close();
   }
   
-  // Kill Python process
+  // Kill Python process gracefully
   if (pythonProcess) {
-    pythonProcess.kill();
+    try {
+      pythonProcess.kill('SIGTERM');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (err) {
+      log.error('Error killing python process:', err);
+    }
   }
+  
+  // Force kill any remaining BBK-Bridge processes
+  await killExistingBridge();
 });
 
 // Handle uncaught exceptions
