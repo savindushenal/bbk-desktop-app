@@ -12,7 +12,9 @@ contextBridge.exposeInMainWorld('memberScreen', {
     const validChannels = [
       'show-member-info',
       'hide-member-info',
-      'finger-scanned'
+      'finger-scanned',
+      'show-member-popup',
+      'hide-member-popup'
     ];
     
     if (validChannels.includes(channel)) {

@@ -10,9 +10,18 @@ const WebSocket = require('ws');
 const fs = require('fs');
 const log = require('electron-log');
 const net = require('net');
-const { Tunnel } = require('cloudflared');
 const https = require('https');
 const http = require('http');
+
+// Cloudflared is optional - only needed for cloud tunnel
+let Tunnel;
+try {
+  const cloudflared = require('cloudflared');
+  Tunnel = cloudflared.Tunnel;
+} catch (e) {
+  log.warn('Cloudflared not installed - tunnel feature disabled');
+  Tunnel = null;
+}
 
 // Configure logging
 log.transports.file.resolvePathFn = () => path.join(__dirname, 'logs', 'electron.log');
@@ -56,7 +65,9 @@ function fetch(url) {
         resolve({
           ok: res.statusCode >= 200 && res.statusCode < 300,
           status: res.statusCode,
-          json: () => Promise.resolve(JSON.parse(data))
+          statusText: res.statusMessage,
+          json: () => Promise.resolve(JSON.parse(data)),
+          text: () => Promise.resolve(data)
         });
       });
     }).on('error', (err) => {
@@ -327,6 +338,15 @@ async function startPythonBridge() {
  */
 async function startCloudflareTunnel() {
   try {
+    // Check if cloudflared is available
+    if (!Tunnel) {
+      log.error('❌ Cloudflare tunnel not available - cloudflared module not installed');
+      log.error('To enable tunnel:');
+      log.error('1. Run: npm install cloudflared');
+      log.error('2. Restart the app');
+      return;
+    }
+    
     log.info('Starting Cloudflare tunnel...');
     
     const port = config.python_bridge.port || 8000;
@@ -529,79 +549,183 @@ async function handleFingerScanned(data) {
   log.info(`Finger scanned: user_id=${user_id}, punch_type=${punch_type}`);
   
   try {
-    // Fetch member details from API
-    const apiUrl = config.cloud?.api_url || 'https://bbk.absterco.com';
-    const response = await fetch(`${apiUrl}/api/members/${user_id}`);
+    // user_id from fingerprint device is the register_id in members table
+    // Search by register_id and get full member data with activations in ONE call
+    const apiUrl = config.cloud?.base_url || 'https://bbkdashboard.vercel.app';
+    const searchUrl = `${apiUrl}/api/members/search?register_id=${user_id}`;
+    log.info(`Searching for member with register_id ${user_id} at: ${searchUrl}`);
     
-    if (!response.ok) {
-      log.error(`Failed to fetch member ${user_id}: ${response.status}`);
+    const searchResponse = await fetch(searchUrl);
+    
+    log.info(`Search response status: ${searchResponse.status}`);
+    
+    if (!searchResponse.ok) {
+      const errorText = await searchResponse.text();
+      log.error(`Failed to search member by register_id ${user_id}: ${searchResponse.status} - ${errorText}`);
       showNotification('Error', 'Member not found', 'error');
       return;
     }
     
-    const result = await response.json();
-    const member = result.data;
+    const searchResult = await searchResponse.json();
+    log.info(`Search result:`, JSON.stringify(searchResult, null, 2));
     
-    // Get the most recent activation
-    const activations = member.registration_gym_members || [];
-    const latestActivation = activations.length > 0 ? activations[0] : null;
-    
-    // Check if member has valid activation
-    let isValid = false;
-    let accessMessage = '';
-    
-    if (latestActivation && latestActivation.end_date) {
-      const endDate = new Date(latestActivation.end_date);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      endDate.setHours(0, 0, 0, 0);
-      
-      isValid = endDate >= today;
-      
-      if (isValid) {
-        accessMessage = 'Access Granted - Welcome!';
-        log.info(`Member ${user_id} has valid access until ${latestActivation.end_date}`);
-        
-        // Open door
-        await openDoor();
-      } else {
-        accessMessage = 'Access Denied - Membership Expired';
-        log.warn(`Member ${user_id} membership expired on ${latestActivation.end_date}`);
-      }
-    } else {
-      accessMessage = 'Access Denied - No Active Membership';
-      log.warn(`Member ${user_id} has no activation record`);
+    if (!searchResult.success || !searchResult.data || searchResult.data.length === 0) {
+      log.error(`No member found with register_id ${user_id}`);
+      showNotification('Access Denied', 'Member not found', 'error');
+      return;
     }
     
-    // Prepare member data to display
-    const memberData = {
-      user_id,
-      name: `${member.fname} ${member.lname}`,
-      phone: member.telephone_no,
-      expiry_date: latestActivation?.end_date || 'N/A',
-      is_valid: isValid,
-      message: accessMessage,
-      timestamp
-    };
+    const fullMember = searchResult.data[0];
+    const memberId = fullMember.id;
+    log.info(`Found member ID: ${memberId} for register_id: ${user_id}`);
     
-    // Show popup on all screens
-    broadcastToWindows('show-member-popup', memberData);
-    
-    // Auto-close after 5 seconds
-    setTimeout(() => {
-      broadcastToWindows('hide-member-popup');
-    }, 5000);
-    
-    // Show notification
-    showNotification(
-      isValid ? 'Access Granted' : 'Access Denied',
-      `${memberData.name} - ${accessMessage}`,
-      isValid ? 'info' : 'error'
-    );
+    // Process member validation and access control
+    await processValidMember(fullMember, user_id, timestamp);
     
   } catch (error) {
     log.error('Error handling finger scan:', error);
     showNotification('Error', 'Failed to process attendance', 'error');
+  }
+}
+
+/**
+ * Process valid member and check access
+ */
+async function processValidMember(fullMember, registerId, timestamp) {
+  const memberId = fullMember.id;
+  
+  // Get the most recent registration with activation data
+  const registrations = fullMember.registration_gym_members || [];
+  const latestRegistration = registrations.length > 0 ? registrations[0] : null;
+  
+  // Get activation from the registration (contains end_date)
+  const activation = latestRegistration?.activation || null;
+  
+  // Check if member has valid activation
+  let isValid = false;
+  let accessMessage = '';
+  
+  if (activation && activation.end_date) {
+    const endDate = new Date(activation.end_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    endDate.setHours(0, 0, 0, 0);
+    
+    isValid = endDate >= today;
+    
+    if (isValid) {
+      accessMessage = 'Access Granted - Welcome!';
+      log.info(`Member ${memberId} (register_id: ${registerId}) has valid access until ${activation.end_date}`);
+      
+      // Open door for valid members
+      await openDoor();
+    } else {
+      accessMessage = 'Access Denied - Membership Expired';
+      log.warn(`Member ${memberId} (register_id: ${registerId}) membership expired on ${activation.end_date}`);
+    }
+  } else {
+    accessMessage = 'Access Denied - No Active Membership';
+    log.warn(`Member ${memberId} (register_id: ${registerId}) has no activation record`);
+  }
+  
+  // Mark attendance regardless of validity (for tracking)
+  if (latestRegistration) {
+    await markAttendance(memberId, latestRegistration.id);
+  }
+  
+  // Prepare member data to display
+  const memberData = {
+    user_id: memberId,
+    register_id: registerId,
+    name: `${fullMember.fname} ${fullMember.lname}`,
+    phone: fullMember.telephone_no,
+    expiry_date: activation?.end_date || 'N/A',
+    is_valid: isValid,
+    message: accessMessage,
+    timestamp
+  };
+  
+  // Show popup on all screens (for both valid and expired)
+  broadcastToWindows('show-member-popup', memberData);
+  
+  // Auto-close after 5 seconds
+  setTimeout(() => {
+    broadcastToWindows('hide-member-popup');
+  }, 5000);
+  
+  // Show notification
+  showNotification(
+    isValid ? 'Access Granted' : 'Access Denied',
+    `${memberData.name} - ${accessMessage}`,
+    isValid ? 'info' : 'error'
+  );
+}
+
+/**
+ * Mark attendance (check-in or check-out)
+ */
+async function markAttendance(memberId, registrationId) {
+  try {
+    const apiUrl = config.cloud?.base_url || 'https://bbkdashboard.vercel.app';
+    const attendanceUrl = `${apiUrl}/api/attendance/mark`;
+    
+    log.info(`Marking attendance for member ${memberId}, registration ${registrationId}`);
+    
+    // Use native http/https POST
+    const url = new URL(attendanceUrl);
+    const protocol = url.protocol === 'https:' ? https : http;
+    const postData = JSON.stringify({
+      member_id: memberId,
+      registration_id: registrationId
+    });
+    
+    const options = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+    
+    return new Promise((resolve, reject) => {
+      const req = protocol.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            const result = JSON.parse(data);
+            if (result.success) {
+              log.info(`Attendance marked: ${result.action} at ${new Date().toLocaleTimeString()}`);
+              resolve(result);
+            } else {
+              log.error('Failed to mark attendance:', result.error);
+              resolve(null);
+            }
+          } catch (error) {
+            log.error('Error parsing attendance response:', error);
+            resolve(null);
+          }
+        });
+      });
+      
+      req.on('error', (error) => {
+        log.error('Error marking attendance:', error);
+        resolve(null); // Don't fail the door opening if attendance fails
+      });
+      
+      req.write(postData);
+      req.end();
+    });
+  } catch (error) {
+    log.error('Error in markAttendance:', error);
+    return null;
   }
 }
 

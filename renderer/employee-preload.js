@@ -31,7 +31,9 @@ contextBridge.exposeInMainWorld('hardware', {
       'enrollment-error',
       'device-disconnected',
       'python-bridge-connected',
-      'python-bridge-disconnected'
+      'python-bridge-disconnected',
+      'show-member-popup',
+      'hide-member-popup'
     ];
     
     if (validChannels.includes(channel)) {
