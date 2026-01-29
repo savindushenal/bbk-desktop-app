@@ -153,6 +153,12 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+# Add explicit OPTIONS handler for all routes
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Handle OPTIONS requests for CORS preflight"""
+    return {}
+
 
 # ==================== Health Check ====================
 

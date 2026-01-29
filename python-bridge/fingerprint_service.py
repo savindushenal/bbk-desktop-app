@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 class FingerprintService:
-    def __init__(self, ip: str, port: int = 4370, timeout: int = 5, ws_manager=None):
+    def __init__(self, ip: str, port: int = 4370, timeout: int = 60, ws_manager=None):
         """
         Initialize fingerprint service
         
         Args:
             ip: IP address of fingerprint device
             port: Port number (default 4370)
-            timeout: Connection timeout in seconds
+            timeout: Connection timeout in seconds (60s for enrollment operations)
             ws_manager: WebSocket manager for broadcasting events
         """
         self.ip = ip
@@ -37,7 +37,7 @@ class FingerprintService:
         self.conn = None
         self.is_capturing = False
         
-        logger.info(f"Fingerprint service initialized for {ip}:{port}")
+        logger.info(f"Fingerprint service initialized for {ip}:{port} with timeout {timeout}s")
     
     def connect(self):
         """Connect to fingerprint device"""
@@ -149,40 +149,30 @@ class FingerprintService:
             logger.error(f"Error clearing attendance: {e}")
             raise
     
-    async def enroll_user(self, user_id: int, finger_id: int = 1) -> Dict:
+    async def enroll_user(self, user_id: int, finger_id: int = 0) -> Dict:
         """
-        Enroll a new fingerprint
+        Enroll a new fingerprint - Simplified to match old working code
+        Old code stops live capture BEFORE enrollment, then restarts after
         
         Args:
             user_id: Unique user ID
-            finger_id: Finger slot number (1-10)
+            finger_id: Finger slot number (default 0 like old code)
         
         Returns:
             Dict with enrollment result
         """
-        if not self.conn:
-            raise Exception("Not connected to device")
-        
+        was_capturing = False
         try:
             logger.info(f"Starting enrollment for user {user_id}, finger {finger_id}")
             
-            # Disable device for enrollment
-            self.conn.disable_device()
+            # CRITICAL: Stop attendance capture before enrollment (like old code does)
+            if self.is_capturing:
+                logger.info("Stopping attendance capture for enrollment...")
+                was_capturing = True
+                await self.stop_capture()
+                logger.info("✓ Attendance capture stopped")
             
-            # Check if user already exists
-            existing_users = self.get_users()
-            user_exists = any(u.user_id == str(user_id) for u in existing_users)
-            
-            if user_exists:
-                logger.warning(f"User {user_id} already exists, will update fingerprint")
-                # Delete existing user to re-enroll
-                try:
-                    self.conn.delete_user(uid=user_id)
-                    logger.info(f"Deleted existing user {user_id}")
-                except Exception as e:
-                    logger.warning(f"Could not delete existing user: {e}")
-            
-            # Emit enrollment started event
+            # Emit enrollment started event (emit = websocket broadcast to UI)
             await self.emit_event({
                 "type": "enrollment_started",
                 "user_id": user_id,
@@ -190,23 +180,33 @@ class FingerprintService:
                 "instructions": "Place finger on scanner - enrollment starting..."
             })
             
-            # Enable device for enrollment
-            self.conn.enable_device()
+            # Match old working code EXACTLY:
+            # Line 1331: self.stop_live_capture_thread()  <-- STOP CAPTURE FIRST
+            # Line 1357: self.conn = self.zk.connect()    <-- CREATE FRESH CONNECTION
+            # Line 1380: self.conn.enroll_user(uid, 0)    <-- ENROLL WITH FRESH CONNECTION
+            # Line 1414: self.start_live_capture_thread() <-- RESTART AFTER
             
-            logger.info(f"Starting enrollment for user {user_id} using conn.enroll_user()...")
+            logger.info("Creating fresh connection for enrollment (like old code line 1357)...")
             
-            # This is the CORRECT way - use pyzk's built-in enroll_user method
-            # This method:
-            # 1. Puts device in enrollment mode
-            # 2. Waits for user to scan finger 3 times
-            # 3. Captures and stores fingerprint template automatically
-            # 4. Is a blocking operation (will wait for real scans)
+            # Import time for timing
+            import time
+            start_time = time.time()
             
-            # Run the blocking enroll_user in an executor to not block the async event loop
+            # Create FRESH connection after stopping capture (matches old code exactly)
             loop = asyncio.get_event_loop()
+            self.conn = await loop.run_in_executor(None, self.zk.connect)
+            logger.info("✓ Fresh connection established for enrollment")
+            
+            # Give device time to settle after new connection (important!)
+            await asyncio.sleep(0.5)
+            logger.info("Device ready for enrollment")
+            
+            # Now call enroll_user on this fresh connection
+            logger.info(f"Calling conn.enroll_user({user_id}, {finger_id})...")
             await loop.run_in_executor(None, self.conn.enroll_user, user_id, finger_id)
             
-            logger.info(f"Enrollment completed for user {user_id}")
+            elapsed_time = time.time() - start_time
+            logger.info(f"✓ Enrollment completed after {elapsed_time:.2f} seconds")
             
             # Play success sound on device (if supported)
             try:
@@ -223,6 +223,12 @@ class FingerprintService:
                 "success": True
             })
             
+            # Restart attendance capture if it was running (like old code does)
+            if was_capturing:
+                logger.info("Restarting attendance capture after enrollment...")
+                await self.start_capture()
+                logger.info("✓ Attendance capture restarted")
+            
             return {
                 "success": True,
                 "user_id": user_id,
@@ -232,6 +238,14 @@ class FingerprintService:
             
         except Exception as e:
             logger.error(f"Error during enrollment: {e}")
+            
+            # Restart capture if it was running before error
+            if was_capturing:
+                logger.info("Restarting attendance capture after enrollment error...")
+                try:
+                    await self.start_capture()
+                except:
+                    pass
             
             # Re-enable device on error
             if self.conn:
@@ -350,6 +364,18 @@ class FingerprintService:
         """Stop live capture mode"""
         self.is_capturing = False
         logger.info("Stopping live capture...")
+    
+    async def start_capture(self):
+        """Start attendance capture (alias for start_live_capture)"""
+        logger.info("Starting attendance capture...")
+        await self.start_live_capture()
+    
+    async def stop_capture(self):
+        """Stop attendance capture (alias for stop_live_capture)"""
+        logger.info("Stopping attendance capture...")
+        self.stop_live_capture()
+        # Give it a moment to stop
+        await asyncio.sleep(0.5)
     
     @staticmethod
     def get_punch_name(punch_code: int) -> str:
